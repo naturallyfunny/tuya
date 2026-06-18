@@ -11,9 +11,7 @@ import (
 	"time"
 )
 
-// Signature carries the HMAC-SHA256 request signature and the headers Tuya
-// requires alongside it.
-type Signature struct {
+type signature struct {
 	Sign       string `json:"sign"`
 	Timestamp  string `json:"t"`
 	Nonce      string `json:"nonce"`
@@ -23,7 +21,7 @@ type Signature struct {
 // generateSignature computes the Tuya Cloud OpenAPI request signature. The
 // string-to-sign is method + content-SHA256 + (empty headers) + path, prefixed
 // with accessID + accessToken + timestamp + nonce and HMAC'd with the secret.
-func generateSignature(accessID, accessSecret, accessToken, method, path string, body []byte) (*Signature, error) {
+func generateSignature(accessID, accessSecret, accessToken, method, path string, body []byte) (*signature, error) {
 	timestamp := strconv.FormatInt(time.Now().UnixNano()/int64(time.Millisecond), 10)
 
 	hash := sha256.New()
@@ -44,7 +42,7 @@ func generateSignature(accessID, accessSecret, accessToken, method, path string,
 	mac.Write([]byte(tuyaStr))
 	sign := strings.ToUpper(hex.EncodeToString(mac.Sum(nil)))
 
-	return &Signature{
+	return &signature{
 		Sign:       sign,
 		Timestamp:  timestamp,
 		Nonce:      nonce,
