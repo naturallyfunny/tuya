@@ -39,7 +39,7 @@ type Device struct {
 // current status. Multi-gang switches/outlets are enriched with per-channel
 // names. Returns ErrAccountNotLinked if the owner hasn't linked an account.
 func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, error) {
-	tuyaUID, err := c.store.GetTuyaUID(ctx, ownerID)
+	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, err
 // DeviceStatus reads the current status (DPs) of one device the owner owns.
 // Returns ErrDeviceNotOwned if the device isn't on the owner's account.
 func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]DataPoint, error) {
-	tuyaUID, err := c.store.GetTuyaUID(ctx, ownerID)
+	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]
 // ErrDeviceNotOwned if the device isn't on the owner's account, so an agent can
 // never drive a device that isn't the human's.
 func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, commands []DataPoint) error {
-	tuyaUID, err := c.store.GetTuyaUID(ctx, ownerID)
+	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
 	if err != nil {
 		return err
 	}
@@ -129,6 +129,10 @@ func (c *Client) listDevices(ctx context.Context, tuyaUID string) ([]Device, err
 	return devices, nil
 }
 
+// ErrDeviceNotOwned indicates the targeted device does not belong to the owner's
+// Tuya account. Returned by device commands before anything is sent, so an agent
+// can never drive a device that isn't the human's.
+var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
 // assertOwned verifies deviceID belongs to the Tuya UID, returning
 // ErrDeviceNotOwned otherwise. Ownership is checked by listing the account's
 // devices — adequate for low-traffic, one-action-per-intent agent use.

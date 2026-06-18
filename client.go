@@ -6,7 +6,7 @@
 // ID/secret yields an access token that the Client caches and refreshes on its
 // own. It is not tied to one database or one application: the per-user mapping
 // from an opaque owner ID to that human's Tuya account UID lives behind the
-// Repository interface, with a ready-made PostgreSQL implementation in the
+// AccountStore interface, with a ready-made PostgreSQL implementation in the
 // postgres subpackage.
 package tuya
 
@@ -28,21 +28,11 @@ import (
 // account-linking flow.
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
-// ErrDeviceNotOwned indicates the targeted device does not belong to the owner's
-// Tuya account. Returned by device commands before anything is sent, so an agent
-// can never drive a device that isn't the human's.
-var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
-
-const (
-	tokenExpiredTuyaErrorCode = 1010
-	maxIoTRequestAttempts     = 2
-)
-
-// Repository resolves an opaque owner ID to that human's Tuya account. It is a
-// consumer-defined interface (a ready-made PostgreSQL implementation lives in
+// AccountStore resolves an opaque owner ID to that human's Tuya account. It is
+// a consumer-defined interface (a ready-made PostgreSQL implementation lives in
 // the postgres subpackage); the library never assumes what an owner ID means or
 // where the mapping is stored.
-type Repository interface {
+type AccountStore interface {
 	Get(ctx context.Context, ownerID string) (Account, error)
 	GetTuyaUID(ctx context.Context, ownerID string) (string, error)
 }
@@ -64,7 +54,7 @@ type response struct {
 // when Tuya reports code 1010); there is no per-user token store because the
 // credential is project-wide.
 type Client struct {
-	store        Repository
+	accountStore AccountStore
 	accessID     string
 	accessSecret string
 	baseURL      string
@@ -73,19 +63,19 @@ type Client struct {
 	tokenLock    sync.RWMutex
 }
 
-// New builds a Client. store resolves owner IDs to Tuya UIDs; accessID and
-// accessSecret are the Tuya Cloud project credentials; baseURL selects the
+// New builds a Client. accountStore resolves owner IDs to Tuya UIDs; accessID
+// and accessSecret are the Tuya Cloud project credentials; baseURL selects the
 // regional data-center endpoint (e.g. https://openapi.tuyaus.com for the US,
 // tuyaeu/tuyacn/tuyain for EU/China/India). New prefetches an access token so a
 // bad credential or unreachable region fails here, at wiring time, not on the
 // first device call.
-func New(store Repository, accessID, accessSecret, baseURL string) (*Client, error) {
-	if store == nil {
-		return nil, errors.New("tuya: New: store must not be nil")
+func New(accessID, accessSecret, baseURL string, accountStore AccountStore) (*Client, error) {
+	if accountStore == nil {
+		return nil, errors.New("tuya: New: accountStore must not be nil")
 	}
 
 	client := &Client{
-		store:        store,
+		accountStore: accountStore,
 		accessID:     accessID,
 		accessSecret: accessSecret,
 		baseURL:      baseURL,
@@ -105,6 +95,7 @@ func New(store Repository, accessID, accessSecret, baseURL string) (*Client, err
 // a token-expired response (code 1010) it refreshes once and retries, so callers
 // never see a stale-token failure.
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
+	const maxIoTRequestAttempts = 2
 	for attempt := 0; attempt < maxIoTRequestAttempts; attempt++ {
 		fullURL := c.baseURL + path
 
@@ -160,6 +151,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 			return tuyaResp.Result, nil
 		}
 
+		const tokenExpiredTuyaErrorCode = 1010
 		if tuyaResp.Code == tokenExpiredTuyaErrorCode && attempt == 0 {
 			if err := c.ensureValidToken(ctx); err != nil {
 				return nil, fmt.Errorf("failed to refresh token after Tuya error %d: %w", tuyaResp.Code, err)

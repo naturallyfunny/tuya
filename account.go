@@ -18,5 +18,5 @@ type Account struct {
 // Account returns the Tuya account linked to ownerID, or ErrAccountNotLinked if
 // the human hasn't linked one yet.
 func (c *Client) Account(ctx context.Context, ownerID string) (Account, error) {
-	return c.store.Get(ctx, ownerID)
+	return c.accountStore.Get(ctx, ownerID)
 }
