@@ -59,7 +59,7 @@ type Client struct {
 	accessSecret string
 	baseURL      string
 	httpClient   *http.Client
-	token        *Token
+	token        *token
 	tokenLock    sync.RWMutex
 }
 
@@ -80,7 +80,7 @@ func New(accessID, accessSecret, baseURL string, accountStore AccountStore) (*Cl
 		accessSecret: accessSecret,
 		baseURL:      baseURL,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
-		token:        &Token{},
+		token:        &token{},
 		tokenLock:    sync.RWMutex{},
 	}
 
@@ -106,7 +106,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		}
 		c.tokenLock.RUnlock()
 
-		signature, err := generateSignature(c.accessID, c.accessSecret, accessToken, method, path, body)
+		signature, err := sign(c.accessID, c.accessSecret, accessToken, method, path, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate signature: %w", err)
 		}
@@ -165,77 +165,4 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
 }
 
-func (c *Client) doTokenRequest(ctx context.Context, method, path string) (*response, error) {
-	fullURL := c.baseURL + path
 
-	signature, err := generateSignature(c.accessID, c.accessSecret, "", method, path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate token signature: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request to %s: %w", fullURL, err)
-	}
-
-	httpReq.Header.Set("client_id", c.accessID)
-	httpReq.Header.Set("sign", signature.Sign)
-	httpReq.Header.Set("t", signature.Timestamp)
-	httpReq.Header.Set("sign_method", signature.SignMethod)
-	httpReq.Header.Set("access_token", "")
-	httpReq.Header.Set("nonce", signature.Nonce)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("token request to %s failed: %w", fullURL, err)
-	}
-	defer resp.Body.Close()
-
-	respBodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response from %s: %w", fullURL, err)
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("token request to %s returned non-200 status code: %d, body: %s", fullURL, resp.StatusCode, string(respBodyBytes))
-	}
-
-	var tuyaResp response
-	if err := json.Unmarshal(respBodyBytes, &tuyaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response from %s: %w", fullURL, err)
-	}
-
-	return &tuyaResp, nil
-}
-
-func (c *Client) updateToken(ctx context.Context) error {
-	resp, err := c.getToken(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
-	}
-
-	if !resp.Success {
-		return fmt.Errorf("Tuya token request failed with code %d: %s", resp.Code, resp.Msg)
-	}
-
-	var newToken Token
-	if err := json.Unmarshal(resp.Result, &newToken); err != nil {
-		return fmt.Errorf("failed to unmarshal token result: %w", err)
-	}
-
-	newToken.ExpireTime = time.Now().Unix() + newToken.ExpireTime
-
-	c.token = &newToken
-	return nil
-}
-
-func (c *Client) ensureValidToken(ctx context.Context) error {
-	c.tokenLock.Lock()
-	defer c.tokenLock.Unlock()
-
-	if c.token != nil && c.token.ExpireTime > time.Now().Unix() {
-		return nil
-	}
-
-	return c.updateToken(ctx)
-}

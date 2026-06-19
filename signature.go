@@ -21,7 +21,7 @@ type signature struct {
 // generateSignature computes the Tuya Cloud OpenAPI request signature. The
 // string-to-sign is method + content-SHA256 + (empty headers) + path, prefixed
 // with accessID + accessToken + timestamp + nonce and HMAC'd with the secret.
-func generateSignature(accessID, accessSecret, accessToken, method, path string, body []byte) (*signature, error) {
+func sign(accessID, accessSecret, accessToken, method, path string, body []byte) (*signature, error) {
 	timestamp := strconv.FormatInt(time.Now().UnixNano()/int64(time.Millisecond), 10)
 
 	hash := sha256.New()
