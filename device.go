@@ -169,45 +169,40 @@ func (c *Client) enrichDevices(ctx context.Context, devices []Device) error {
 		return nil
 	}
 
-	var wg sync.WaitGroup
-	errs := make(chan error, len(devicesToEnrich))
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
 
 	for _, device := range devicesToEnrich {
 		wg.Add(1)
-		go func(device *Device) {
+		go func() {
 			defer wg.Done()
 
 			path := fmt.Sprintf("/v1.0/devices/%s/multiple-names", device.ID)
 			raw, err := c.Do(ctx, http.MethodGet, path, nil)
 			if err != nil {
-				errs <- fmt.Errorf("failed to get channel name for device %s: %w", device.ID, err)
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("failed to get channel name for device %s: %w", device.ID, err))
+				mu.Unlock()
 				return
 			}
 
 			var channels []Channel
 			if len(raw) > 0 {
 				if err := json.Unmarshal(raw, &channels); err != nil {
-					errs <- fmt.Errorf("failed to decode channels for device %s: %w", device.ID, err)
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("failed to decode channels for device %s: %w", device.ID, err))
+					mu.Unlock()
 					return
 				}
 			}
 			device.CodeNameMapping = channels
-		}(device)
+		}()
 	}
 
 	wg.Wait()
-	close(errs)
 
-	var allErrors []string
-	for err := range errs {
-		if err != nil {
-			allErrors = append(allErrors, err.Error())
-		}
-	}
-
-	if len(allErrors) > 0 {
-		return fmt.Errorf("encountered %d error(s): %s", len(allErrors), strings.Join(allErrors, "; "))
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
