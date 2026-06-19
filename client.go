@@ -61,19 +61,28 @@ type Client struct {
 	tokenLock    sync.RWMutex
 }
 
+// Option configures a Client at construction time. The zero-configuration Client
+// is fully usable; options only override defaults (currently just the HTTP
+// client). New options can be added without breaking the New signature.
+type Option func(*Client)
+
+// WithHTTPClient sets the http.Client used for every Tuya request, controlling
+// timeouts and transport. Without it, New uses http.DefaultClient.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) {
+		c.httpClient = httpClient
+	}
+}
+
 // New builds a Client. accountStore resolves owner IDs to Tuya UIDs; accessID
 // and accessSecret are the Tuya Cloud project credentials; baseURL selects the
 // regional data-center endpoint (e.g. https://openapi.tuyaus.com for the US,
-// tuyaeu/tuyacn/tuyain for EU/China/India); httpClient controls timeouts and
-// transport (pass nil to use http.DefaultClient). New prefetches an access token
-// so a bad credential or unreachable region fails here, at wiring time, not on
-// the first device call.
-func New(accessID, accessSecret, baseURL string, accountStore AccountStore, httpClient *http.Client) (*Client, error) {
+// tuyaeu/tuyacn/tuyain for EU/China/India). Behaviour is tuned with Options such
+// as WithHTTPClient. New prefetches an access token so a bad credential or
+// unreachable region fails here, at wiring time, not on the first device call.
+func New(accessID, accessSecret, baseURL string, accountStore AccountStore, opts ...Option) (*Client, error) {
 	if accountStore == nil {
 		return nil, errors.New("tuya: New: accountStore must not be nil")
-	}
-	if httpClient == nil {
-		httpClient = http.DefaultClient
 	}
 
 	client := &Client{
@@ -81,9 +90,14 @@ func New(accessID, accessSecret, baseURL string, accountStore AccountStore, http
 		accessID:     accessID,
 		accessSecret: accessSecret,
 		baseURL:      baseURL,
-		httpClient:   httpClient,
-		token:        &token{},
-		tokenLock:    sync.RWMutex{},
+		httpClient:   http.DefaultClient,
+	}
+
+	for _, opt := range opts {
+		opt(client)
+	}
+	if client.httpClient == nil {
+		client.httpClient = http.DefaultClient
 	}
 
 	if err := client.ensureValidToken(context.Background()); err != nil {

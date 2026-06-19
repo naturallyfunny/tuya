@@ -35,7 +35,9 @@ if err != nil {
 }
 
 // baseURL = endpoint region: tuyaus / tuyaeu / tuyacn / tuyain
-client, err := tuya.New(store, accessID, accessSecret, "https://openapi.tuyaus.com")
+// httpClient opsional via tuya.WithHTTPClient(...); default http.DefaultClient
+client, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com", store)
+// client, err := tuya.New(accessID, accessSecret, baseURL, store, tuya.WithHTTPClient(hc))
 
 devices, err := client.ListDevices(ctx, ownerID)
 status, err := client.DeviceStatus(ctx, ownerID, deviceID)
