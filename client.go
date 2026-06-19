@@ -131,9 +131,8 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		if err != nil {
 			return nil, fmt.Errorf("request to %s failed: %w", fullURL, err)
 		}
-		defer resp.Body.Close()
-
 		respBodyBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response from %s: %w", fullURL, err)
 		}
