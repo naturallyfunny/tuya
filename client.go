@@ -24,7 +24,7 @@ import (
 
 // ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
 // is no owner-ID → Tuya-UID mapping. Repository implementations return this from
-// Get/GetTuyaUID when no row exists, so consumers can route the human into the
+// Get when no row exists, so consumers can route the human into the
 // account-linking flow.
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
@@ -34,7 +34,6 @@ var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 // where the mapping is stored.
 type AccountStore interface {
 	Get(ctx context.Context, ownerID string) (Account, error)
-	GetTuyaUID(ctx context.Context, ownerID string) (string, error)
 }
 
 // response is the envelope every Tuya Cloud OpenAPI call returns.
@@ -163,5 +162,3 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
 }
-
-

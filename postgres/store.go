@@ -67,23 +67,6 @@ func NewAccountStore(ctx context.Context, db Querier, opts ...Option) (*Store, e
 	return s, nil
 }
 
-// GetTuyaUID returns the Tuya account UID linked to ownerID, or
-// tuya.ErrAccountNotLinked if none is linked.
-func (s *Store) GetTuyaUID(ctx context.Context, ownerID string) (string, error) {
-	var tuyaUID string
-	err := s.db.QueryRow(ctx,
-		`SELECT tuya_uid FROM tuya_app_accounts WHERE owner_id = $1 AND deleted_at IS NULL`,
-		ownerID,
-	).Scan(&tuyaUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", tuya.ErrAccountNotLinked
-		}
-		return "", fmt.Errorf("get tuya uid: %w", err)
-	}
-	return tuyaUID, nil
-}
-
 // Get returns the full Account linked to ownerID, or tuya.ErrAccountNotLinked
 // if none is linked.
 func (s *Store) Get(ctx context.Context, ownerID string) (tuya.Account, error) {

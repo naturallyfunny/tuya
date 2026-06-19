@@ -40,12 +40,12 @@ type Device struct {
 // current status. Multi-gang switches/outlets are enriched with per-channel
 // names. Returns ErrAccountNotLinked if the owner hasn't linked an account.
 func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, error) {
-	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
+	acc, err := c.accountStore.Get(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
 
-	devices, err := c.listDevices(ctx, tuyaUID)
+	devices, err := c.listDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +64,12 @@ func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, err
 // DeviceStatus reads the current status (DPs) of one device the owner owns.
 // Returns ErrDeviceNotOwned if the device isn't on the owner's account.
 func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]DataPoint, error) {
-	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
+	acc, err := c.accountStore.Get(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.assertOwned(ctx, tuyaUID, deviceID); err != nil {
+	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
 		return nil, err
 	}
 
@@ -92,12 +92,12 @@ func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]
 // ErrDeviceNotOwned if the device isn't on the owner's account, so an agent can
 // never drive a device that isn't the human's.
 func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, commands []DataPoint) error {
-	tuyaUID, err := c.accountStore.GetTuyaUID(ctx, ownerID)
+	acc, err := c.accountStore.Get(ctx, ownerID)
 	if err != nil {
 		return err
 	}
 
-	if err := c.assertOwned(ctx, tuyaUID, deviceID); err != nil {
+	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
 		return err
 	}
 
