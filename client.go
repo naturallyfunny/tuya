@@ -19,7 +19,6 @@ import (
 	"io"
 	"net/http"
 	"sync"
-	"time"
 )
 
 // ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
@@ -65,12 +64,16 @@ type Client struct {
 // New builds a Client. accountStore resolves owner IDs to Tuya UIDs; accessID
 // and accessSecret are the Tuya Cloud project credentials; baseURL selects the
 // regional data-center endpoint (e.g. https://openapi.tuyaus.com for the US,
-// tuyaeu/tuyacn/tuyain for EU/China/India). New prefetches an access token so a
-// bad credential or unreachable region fails here, at wiring time, not on the
-// first device call.
-func New(accessID, accessSecret, baseURL string, accountStore AccountStore) (*Client, error) {
+// tuyaeu/tuyacn/tuyain for EU/China/India); httpClient controls timeouts and
+// transport (pass nil to use http.DefaultClient). New prefetches an access token
+// so a bad credential or unreachable region fails here, at wiring time, not on
+// the first device call.
+func New(accessID, accessSecret, baseURL string, accountStore AccountStore, httpClient *http.Client) (*Client, error) {
 	if accountStore == nil {
 		return nil, errors.New("tuya: New: accountStore must not be nil")
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
 
 	client := &Client{
@@ -78,7 +81,7 @@ func New(accessID, accessSecret, baseURL string, accountStore AccountStore) (*Cl
 		accessID:     accessID,
 		accessSecret: accessSecret,
 		baseURL:      baseURL,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		httpClient:   httpClient,
 		token:        &token{},
 		tokenLock:    sync.RWMutex{},
 	}
