@@ -42,9 +42,10 @@ type Querier interface {
 }
 
 // Store maps an owner ID to the human's Tuya account UID, backed by PostgreSQL.
-// Linking and unlinking accounts (writing rows) is the consumer's
-// responsibility; this store only reads the mapping the consumer needs to
-// resolve an owner before calling tuya.IoT.
+// It owns the full lifecycle of that mapping: Get reads it, Link creates or
+// refreshes it, and Unlink soft-deletes it. A consumer links an account once
+// (after the human authorizes Tuya), then resolves owner -> UID with Get before
+// driving devices via tuya.IoT.
 type Store struct {
 	db          Querier
 	autoMigrate bool
@@ -98,6 +99,45 @@ func (s *Store) Get(ctx context.Context, ownerID string) (Account, error) {
 		return Account{}, fmt.Errorf("get account: %w", err)
 	}
 	return acc, nil
+}
+
+// Link records that ownerID maps to tuyaUID, returning the resulting Account. It
+// is an upsert: linking an owner that is already linked refreshes the UID and
+// updated_at, and re-linking a previously unlinked owner revives the row
+// (clearing deleted_at) rather than failing on the primary key.
+func (s *Store) Link(ctx context.Context, ownerID, tuyaUID string) (Account, error) {
+	var acc Account
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO tuya_app_accounts (owner_id, tuya_uid)
+		 VALUES ($1, $2)
+		 ON CONFLICT (owner_id) DO UPDATE
+		   SET tuya_uid = EXCLUDED.tuya_uid, updated_at = NOW(), deleted_at = NULL
+		 RETURNING owner_id, tuya_uid, created_at, updated_at`,
+		ownerID, tuyaUID,
+	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
+	if err != nil {
+		return Account{}, fmt.Errorf("link account: %w", err)
+	}
+	return acc, nil
+}
+
+// Unlink soft-deletes the mapping for ownerID (setting deleted_at), so Get stops
+// returning it while the row is preserved for audit. Returns ErrAccountNotLinked
+// if no live mapping exists.
+func (s *Store) Unlink(ctx context.Context, ownerID string) error {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE tuya_app_accounts
+		   SET deleted_at = NOW(), updated_at = NOW()
+		 WHERE owner_id = $1 AND deleted_at IS NULL`,
+		ownerID,
+	)
+	if err != nil {
+		return fmt.Errorf("unlink account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotLinked
+	}
+	return nil
 }
 
 // migrate applies all pending .up.sql migrations in order, skipping any that

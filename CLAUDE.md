@@ -27,7 +27,7 @@ device.go      Domain device: tipe Device/DataPoint/Channel, ErrDeviceNotOwned, 
                Domain baru → file baru (home.go, space.go), tiap file punya assert-nya sendiri.
 postgres/
   store.go     Account management (owner_id -> tuya_uid): Account, ErrAccountNotLinked,
-               Store.Get, migrate. TANPA interface — tidak dikonsumsi paket tuya.
+               Store.Get/Link/Unlink, migrate. TANPA interface — tidak dikonsumsi paket tuya.
   migrations/  SQL files, di-embed via //go:embed (tabel tuya_app_accounts, soft-delete deleted_at)
 ```
 
@@ -88,8 +88,8 @@ Jangan pernah edit migration yang sudah di-commit.
   (`assertDeviceOwned`, dst). Struct `IoTClient` + `NewIoTClient` hidup di `client.go`, di samping transport.
 - **Tiga concern dipisah, tanpa interface AccountStore.** `Client` transport, `IoTClient` facade domain
   berbasis `tuyaUID`, account management seluruhnya di `postgres` (tanpa interface karena tak dikonsumsi
-  paket `tuya`). Resolusi owner→uid + link/unlink akun adalah tanggung jawab consumer; ia memanggil
-  `store.Get` sendiri lalu mengoper `tuyaUID` ke `IoTClient`.
+  paket `tuya`). `Store` memiliki siklus hidup mapping penuh — `Get` (baca), `Link` (upsert), `Unlink`
+  (soft-delete); consumer me-link akun sekali lalu me-resolve owner→uid via `Get` sebelum panggil `IoTClient`.
 - **`Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Jaminan ownership
   adalah properti method `IoTClient` (`DeviceStatus`/`SendCommands`), bukan properti `Client` — `Do`
   melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis. agent) adalah tanggung jawab consumer.
@@ -129,7 +129,7 @@ Temuan AI yang sudah dibantah — jangan ulangi.
 ## Conventions
 
 - `tuya.New(...)` mengembalikan `*Client` (transport); `tuya.NewIoTClient(client)` membungkusnya jadi facade domain
-- Account management hidup di `postgres` (tanpa interface): `Account`, `ErrAccountNotLinked`, `Store.Get`
+- Account management hidup di `postgres` (tanpa interface): `Account`, `ErrAccountNotLinked`, `Store.Get/Link/Unlink`
 - `postgres.NewAccountStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
 - `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup
 - Flat structure, tidak ada `pkg/`
