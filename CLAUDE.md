@@ -13,19 +13,27 @@ volume rendah. **Saat mengaudit, jangan menilai repo ini dengan standar service 
 ## Struktur
 
 ```
-client.go      Client (token cache/refresh app-level, HMAC-SHA256 signing, Do dengan retry-on-1010),
-               AccountStore interface (consumer-defined), sentinel ErrAccountNotLinked / ErrDeviceNotOwned
-token.go       Token, getToken (grant_type=1) — token app-level, bukan per-user
-signature.go   generateSignature (HMAC-SHA256 ala Tuya Cloud)
-account.go     Account, Client.Account
-device.go      Device/DataPoint/Channel, ListDevices, DeviceStatus, SendCommands (ownership check),
-               enrichDevices (channel-name multi-gang untuk kategori kg/cz*)
+client.go      Client (transport: token cache/refresh app-level, HMAC-SHA256 signing, Do
+               dengan retry-on-1010) + IoTClient (facade, membungkus *Client) + NewIoTClient.
+               Operasi domain menempel di IoTClient tapi DITULIS di file domain masing-masing.
+auth.go        Concern auth: request signing (signTokenRequest/signBusinessRequest, hmacSign,
+               setAuthHeaders) + token lifecycle (token app-level grant_type=1, fetch/update/
+               ensureValidToken). Tuya tanda-tangani token-request vs business-request berbeda.
+device.go      Domain device: tipe Device/DataPoint/Channel, ErrDeviceNotOwned, dan method
+               *IoTClient: ListDevices/DeviceStatus/SendCommands (berbasis tuyaUID),
+               assertDeviceOwned, enrichDevices (channel-name multi-gang kategori kg/cz*).
+               Domain baru → file baru (home.go, space.go), tiap file punya assert-nya sendiri.
 postgres/
-  store.go     Store implements tuya.AccountStore (owner_id -> tuya_uid), Migrate()
+  store.go     Account management (owner_id -> tuya_uid): Account, ErrAccountNotLinked,
+               Store.Get, migrate. TANPA interface — tidak dikonsumsi paket tuya.
   migrations/  SQL files, di-embed via //go:embed (tabel tuya_app_accounts, soft-delete deleted_at)
 ```
 
 ## Cara Pakai
+
+Tiga potong ortogonal yang dirangkai consumer: `Client` (transport), `IoTClient` (facade
+operasi domain berbasis `tuyaUID`), dan `postgres.Store` (resolusi owner→uid). Consumer
+me-resolve owner sendiri lalu memanggil `IoTClient`.
 
 ```go
 // postgres.WithAutoMigrate() opsional — jalankan migration saat startup
@@ -36,15 +44,23 @@ if err != nil {
 
 // baseURL = endpoint region: tuyaus / tuyaeu / tuyacn / tuyain
 // httpClient opsional via tuya.WithHTTPClient(...); default http.DefaultClient
-client, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com", store)
-// client, err := tuya.New(accessID, accessSecret, baseURL, store, tuya.WithHTTPClient(hc))
+client, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com")
+// client, err := tuya.New(accessID, accessSecret, baseURL, tuya.WithHTTPClient(hc))
+iot := tuya.NewIoTClient(client)
 
-devices, err := client.ListDevices(ctx, ownerID)
-status, err := client.DeviceStatus(ctx, ownerID, deviceID)
-err = client.SendCommands(ctx, ownerID, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
+// resolve owner → uid sendiri (concern consumer), baru panggil IoT
+acc, err := store.Get(ctx, ownerID)
+if errors.Is(err, postgres.ErrAccountNotLinked) {
+    // arahkan human ke linking flow
+}
+
+devices, err := iot.ListDevices(ctx, acc.TuyaUID)
+status, err := iot.DeviceStatus(ctx, acc.TuyaUID, deviceID)
+err = iot.SendCommands(ctx, acc.TuyaUID, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
-`ownerID` adalah identitas opaque milik consumer; library memetakannya ke Tuya UID lewat `AccountStore`.
+`ownerID` adalah identitas opaque milik consumer; consumer memetakannya ke Tuya UID lewat
+`postgres.Store` (atau store backend lain miliknya) sebelum memanggil `IoT`.
 
 ## Region
 
@@ -62,15 +78,24 @@ Jangan pernah edit migration yang sudah di-commit.
 
 - **Token app-level di-cache in-memory, tanpa store.** Kredensial Tuya bersifat project-wide, bukan
   per-user. `Client` me-refresh sendiri saat expiry / saat Tuya balas code 1010. Tidak perlu token store.
-- **Ownership check via list-then-contains** (`assertOwned`, device.go). Tiap `SendCommands`/`DeviceStatus`
+- **Ownership check via list-then-contains** (`assertDeviceOwned`, device.go). Tiap `SendCommands`/`DeviceStatus`
   melisting device akun lalu cek keanggotaan. Aman & sederhana untuk traffic rendah; caching ditunda
   sampai ada kebutuhan throughput nyata.
-- **`AccountStore` consumer-defined interface.** Library tidak memaksakan storage; consumer menulis baris
-  (link/unlink akun). `postgres.Store` hanya membaca mapping. Penulisan/enkripsi adalah tanggung jawab consumer.
+- **Operasi domain diorganisir per-file, assert terlokalisasi.** Method `IoTClient` ditulis di file
+  domainnya (device.go; nanti home.go, space.go), masing-masing membawa assert kepemilikannya sendiri
+  (`assertDeviceOwned`, dst). Struct `IoTClient` + `NewIoTClient` hidup di `client.go`, di samping transport.
+- **Tiga concern dipisah, tanpa interface AccountStore.** `Client` transport, `IoTClient` facade domain
+  berbasis `tuyaUID`, account management seluruhnya di `postgres` (tanpa interface karena tak dikonsumsi
+  paket `tuya`). Resolusi owner→uid + link/unlink akun adalah tanggung jawab consumer; ia memanggil
+  `store.Get` sendiri lalu mengoper `tuyaUID` ke `IoTClient`.
+- **`Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Jaminan ownership
+  adalah properti method `IoTClient` (`DeviceStatus`/`SendCommands`), bukan properti `Client` — `Do`
+  melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis. agent) adalah tanggung jawab consumer.
 
 ## Conventions
 
-- `AccountStore` interface didefinisikan di `client.go` — consumer-defined interface
+- `tuya.New(...)` mengembalikan `*Client` (transport); `tuya.NewIoTClient(client)` membungkusnya jadi facade domain
+- Account management hidup di `postgres` (tanpa interface): `Account`, `ErrAccountNotLinked`, `Store.Get`
 - `postgres.NewAccountStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
 - `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup
 - Flat structure, tidak ada `pkg/`

@@ -1,5 +1,6 @@
-// Package postgres provides a PostgreSQL-backed implementation of
-// tuya.AccountStore: the owner-ID → Tuya-UID account mapping.
+// Package postgres provides a PostgreSQL-backed account mapping for the Tuya
+// library: the owner-ID → Tuya-UID link a consumer resolves before driving
+// devices via tuya.IoT.
 package postgres
 
 import (
@@ -8,15 +9,29 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"go.naturallyfunny.dev/tuya"
 )
 
 //go:embed migrations
 var migrationFiles embed.FS
+
+// ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
+// is no owner-ID → Tuya-UID mapping. Get returns it when no row exists, so
+// consumers can route the human into the account-linking flow.
+var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
+
+// Account is the link between an opaque owner ID (whatever the consumer uses to
+// identify a human) and that human's Tuya account UID. Devices are listed and
+// controlled under the UID.
+type Account struct {
+	OwnerID   string    `json:"owner_id"`
+	TuyaUID   string    `json:"tuya_uid"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 // Querier is the subset of *pgxpool.Pool / *pgx.Conn / *pgx.Tx that Store
 // needs, so consumers can inject any of them (including test doubles).
@@ -26,10 +41,10 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// Store implements tuya.AccountStore backed by PostgreSQL, mapping an owner ID
-// to the human's Tuya account UID. Linking and unlinking accounts (writing
-// rows) is the consumer's responsibility; this store only reads the mapping the
-// library needs.
+// Store maps an owner ID to the human's Tuya account UID, backed by PostgreSQL.
+// Linking and unlinking accounts (writing rows) is the consumer's
+// responsibility; this store only reads the mapping the consumer needs to
+// resolve an owner before calling tuya.IoT.
 type Store struct {
 	db          Querier
 	autoMigrate bool
@@ -67,19 +82,19 @@ func NewAccountStore(ctx context.Context, db Querier, opts ...Option) (*Store, e
 	return s, nil
 }
 
-// Get returns the full Account linked to ownerID, or tuya.ErrAccountNotLinked
-// if none is linked.
-func (s *Store) Get(ctx context.Context, ownerID string) (tuya.Account, error) {
-	var acc tuya.Account
+// Get returns the full Account linked to ownerID, or ErrAccountNotLinked if
+// none is linked.
+func (s *Store) Get(ctx context.Context, ownerID string) (Account, error) {
+	var acc Account
 	err := s.db.QueryRow(ctx,
 		`SELECT owner_id, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner_id = $1 AND deleted_at IS NULL`,
 		ownerID,
 	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return tuya.Account{}, tuya.ErrAccountNotLinked
+			return Account{}, ErrAccountNotLinked
 		}
-		return tuya.Account{}, fmt.Errorf("get account: %w", err)
+		return Account{}, fmt.Errorf("get account: %w", err)
 	}
 	return acc, nil
 }
@@ -143,5 +158,3 @@ func (s *Store) validateSchema(ctx context.Context) error {
 	}
 	return nil
 }
-
-var _ tuya.AccountStore = (*Store)(nil)

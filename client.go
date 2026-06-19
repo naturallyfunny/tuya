@@ -4,36 +4,22 @@
 //
 // The library speaks Tuya at the app (project) level — a single access
 // ID/secret yields an access token that the Client caches and refreshes on its
-// own. It is not tied to one database or one application: the per-user mapping
-// from an opaque owner ID to that human's Tuya account UID lives behind the
-// AccountStore interface, with a ready-made PostgreSQL implementation in the
-// postgres subpackage.
+// own. It is split into orthogonal pieces a consumer composes: Client is the
+// transport (signing, token, Do); IoT wraps a Client and performs device
+// operations against a Tuya account UID. Mapping an opaque owner ID to that
+// human's Tuya UID is the consumer's concern — a ready-made PostgreSQL account
+// store lives in the postgres subpackage.
 package tuya
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 )
-
-// ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
-// is no owner-ID → Tuya-UID mapping. Repository implementations return this from
-// Get when no row exists, so consumers can route the human into the
-// account-linking flow.
-var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
-
-// AccountStore resolves an opaque owner ID to that human's Tuya account. It is
-// a consumer-defined interface (a ready-made PostgreSQL implementation lives in
-// the postgres subpackage); the library never assumes what an owner ID means or
-// where the mapping is stored.
-type AccountStore interface {
-	Get(ctx context.Context, ownerID string) (Account, error)
-}
 
 // response is the envelope every Tuya Cloud OpenAPI call returns.
 type response struct {
@@ -52,7 +38,6 @@ type response struct {
 // when Tuya reports code 1010); there is no per-user token store because the
 // credential is project-wide.
 type Client struct {
-	accountStore AccountStore
 	accessID     string
 	accessSecret string
 	baseURL      string
@@ -74,19 +59,15 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	}
 }
 
-// New builds a Client. accountStore resolves owner IDs to Tuya UIDs; accessID
-// and accessSecret are the Tuya Cloud project credentials; baseURL selects the
-// regional data-center endpoint (e.g. https://openapi.tuyaus.com for the US,
-// tuyaeu/tuyacn/tuyain for EU/China/India). Behaviour is tuned with Options such
-// as WithHTTPClient. New prefetches an access token so a bad credential or
-// unreachable region fails here, at wiring time, not on the first device call.
-func New(accessID, accessSecret, baseURL string, accountStore AccountStore, opts ...Option) (*Client, error) {
-	if accountStore == nil {
-		return nil, errors.New("tuya: New: accountStore must not be nil")
-	}
-
+// New builds a Client. accessID and accessSecret are the Tuya Cloud project
+// credentials; baseURL selects the regional data-center endpoint (e.g.
+// https://openapi.tuyaus.com for the US, tuyaeu/tuyacn/tuyain for EU/China/India).
+// Behaviour is tuned with Options such as WithHTTPClient. New prefetches an
+// access token so a bad credential or unreachable region fails here, at wiring
+// time, not on the first device call. Wrap the Client with NewIoT to perform
+// device operations.
+func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error) {
 	client := &Client{
-		accountStore: accountStore,
 		accessID:     accessID,
 		accessSecret: accessSecret,
 		baseURL:      baseURL,
@@ -115,14 +96,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 	for attempt := 0; attempt < maxIoTRequestAttempts; attempt++ {
 		fullURL := c.baseURL + path
 
-		var accessToken string
-		c.tokenLock.RLock()
-		if c.token != nil {
-			accessToken = c.token.AccessToken
-		}
-		c.tokenLock.RUnlock()
-
-		signature, err := sign(c.accessID, c.accessSecret, accessToken, method, path, body)
+		sig, err := c.signBusinessRequest(method, path, body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate signature: %w", err)
 		}
@@ -136,12 +110,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		if len(body) > 0 {
 			httpReq.Header.Set("Content-Type", "application/json")
 		}
-		httpReq.Header.Set("client_id", c.accessID)
-		httpReq.Header.Set("sign", signature.Sign)
-		httpReq.Header.Set("t", signature.Timestamp)
-		httpReq.Header.Set("sign_method", signature.SignMethod)
-		httpReq.Header.Set("access_token", accessToken)
-		httpReq.Header.Set("nonce", signature.Nonce)
+		setAuthHeaders(httpReq, c.accessID, sig)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -178,4 +147,18 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 	}
 
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
+}
+
+// IoTClient performs Tuya IoT operations on top of a transport Client. It is the
+// facade a consumer holds: domain operations attach to it, organized per domain
+// (device.go, and future home.go / space.go), each enforcing its own ownership
+// checks. The ownership guarantee lives here, on the operation methods — not on
+// Client.Do, which is a raw escape hatch.
+type IoTClient struct {
+	client *Client
+}
+
+// NewIoTClient wraps a transport Client with IoT operations.
+func NewIoTClient(c *Client) *IoTClient {
+	return &IoTClient{client: c}
 }

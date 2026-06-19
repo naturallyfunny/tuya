@@ -36,16 +36,15 @@ type Device struct {
 	CodeNameMapping []Channel   `json:"code_name_mapping"`
 }
 
-// ListDevices returns every device on the owner's Tuya account, each with its
-// current status. Multi-gang switches/outlets are enriched with per-channel
-// names. Returns ErrAccountNotLinked if the owner hasn't linked an account.
-func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, error) {
-	acc, err := c.accountStore.Get(ctx, ownerID)
-	if err != nil {
-		return nil, err
-	}
+// ErrDeviceNotOwned indicates the targeted device does not belong to the Tuya
+// account. Returned by device commands before anything is sent, so an agent can
+// never drive a device that isn't the human's.
+var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
 
-	devices, err := c.listDevices(ctx, acc.TuyaUID)
+// ListDevices returns every device on the account, each with its current
+// status. Multi-gang switches/outlets are enriched with per-channel names.
+func (c *IoTClient) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+	devices, err := c.listDevices(ctx, tuyaUID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,20 +60,15 @@ func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]Device, err
 	return devices, nil
 }
 
-// DeviceStatus reads the current status (DPs) of one device the owner owns.
-// Returns ErrDeviceNotOwned if the device isn't on the owner's account.
-func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]DataPoint, error) {
-	acc, err := c.accountStore.Get(ctx, ownerID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
+// DeviceStatus reads the current status (DPs) of one device on the account.
+// Returns ErrDeviceNotOwned if the device isn't on the account.
+func (c *IoTClient) DeviceStatus(ctx context.Context, tuyaUID, deviceID string) ([]DataPoint, error) {
+	if err := c.assertDeviceOwned(ctx, tuyaUID, deviceID); err != nil {
 		return nil, err
 	}
 
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,16 +82,11 @@ func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]
 	return status, nil
 }
 
-// SendCommands sends DP commands to one device the owner owns. Returns
-// ErrDeviceNotOwned if the device isn't on the owner's account, so an agent can
-// never drive a device that isn't the human's.
-func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, commands []DataPoint) error {
-	acc, err := c.accountStore.Get(ctx, ownerID)
-	if err != nil {
-		return err
-	}
-
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
+// SendCommands sends DP commands to one device on the account. Returns
+// ErrDeviceNotOwned if the device isn't on the account, so an agent can never
+// drive a device that isn't the human's.
+func (c *IoTClient) SendCommands(ctx context.Context, tuyaUID, deviceID string, commands []DataPoint) error {
+	if err := c.assertDeviceOwned(ctx, tuyaUID, deviceID); err != nil {
 		return err
 	}
 
@@ -109,16 +98,16 @@ func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, com
 		return fmt.Errorf("failed to marshal command payload: %w", err)
 	}
 
-	if _, err := c.Do(ctx, http.MethodPost, path, body); err != nil {
+	if _, err := c.client.Do(ctx, http.MethodPost, path, body); err != nil {
 		return fmt.Errorf("failed to send commands: %w", err)
 	}
 	return nil
 }
 
 // listDevices fetches the raw device list for a Tuya UID.
-func (c *Client) listDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+func (c *IoTClient) listDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	path := fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID)
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +119,10 @@ func (c *Client) listDevices(ctx context.Context, tuyaUID string) ([]Device, err
 	return devices, nil
 }
 
-// ErrDeviceNotOwned indicates the targeted device does not belong to the owner's
-// Tuya account. Returned by device commands before anything is sent, so an agent
-// can never drive a device that isn't the human's.
-var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
-// assertOwned verifies deviceID belongs to the Tuya UID, returning
+// assertDeviceOwned verifies deviceID belongs to the Tuya UID, returning
 // ErrDeviceNotOwned otherwise. Ownership is checked by listing the account's
 // devices — adequate for low-traffic, one-action-per-intent agent use.
-func (c *Client) assertOwned(ctx context.Context, tuyaUID, deviceID string) error {
+func (c *IoTClient) assertDeviceOwned(ctx context.Context, tuyaUID, deviceID string) error {
 	devices, err := c.listDevices(ctx, tuyaUID)
 	if err != nil {
 		return fmt.Errorf("failed to verify device ownership: %w", err)
@@ -153,10 +138,10 @@ func (c *Client) assertOwned(ctx context.Context, tuyaUID, deviceID string) erro
 // enrichDevices fills CodeNameMapping for multi-gang switches/outlets (category
 // "kg" or "cz*") by fetching each one's channel names concurrently. Other
 // devices get an empty, non-nil mapping.
-func (c *Client) enrichDevices(ctx context.Context, devices []Device) error {
+func (c *IoTClient) enrichDevices(ctx context.Context, devices []Device) error {
 	var devicesToEnrich []*Device
-	for i := range devices {
-		device := &devices[i]
+	for idx := range devices {
+		device := &devices[idx]
 		category := strings.ToLower(device.Category)
 		device.CodeNameMapping = []Channel{}
 
@@ -178,7 +163,7 @@ func (c *Client) enrichDevices(ctx context.Context, devices []Device) error {
 	for _, device := range devicesToEnrich {
 		wg.Go(func() {
 			path := fmt.Sprintf("/v1.0/devices/%s/multiple-names", device.ID)
-			raw, err := c.Do(ctx, http.MethodGet, path, nil)
+			raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("failed to get channel name for device %s: %w", device.ID, err))
