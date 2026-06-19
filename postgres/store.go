@@ -75,8 +75,9 @@ func NewAccountStore(ctx context.Context, db Querier, opts ...Option) (*Store, e
 		if err := s.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("postgres: auto-migrate: %w", err)
 		}
-	}
-	if err := s.validateSchema(ctx); err != nil {
+	} else if err := s.validateSchema(ctx); err != nil {
+		// Only meaningful when we did not migrate: catches a consumer that
+		// forgot to run migrations. After auto-migrate the schema is guaranteed.
 		return nil, err
 	}
 	return s, nil
