@@ -8,7 +8,9 @@ Dirancang interface-based agar dapat dipakai lintas project, tidak terikat ke sa
 Library ini dipakai sebagai **tool yang dipanggil oleh AI agent**, bukan backend high-throughput.
 Pola traffic-nya: panggilan sporadik, satu aksi per intent user (list device, baca status, kirim command),
 volume rendah. **Saat mengaudit, jangan menilai repo ini dengan standar service high-throughput** — beberapa
-"kelemahan" adalah keputusan sadar. Lihat "Design Decisions" sebelum melaporkan temuan.
+"kelemahan" adalah keputusan sadar. Baca "Design Decisions" dan "Slop History" sebelum melaporkan temuan;
+sebelum menyarankan idiom generik ("prefer X"), cek apakah ia mengubah semantik atau bertabrakan dengan
+kendala domain (signing wajib hash full-body, retry me-replay body, collect-all error).
 
 ## Struktur
 
@@ -91,6 +93,38 @@ Jangan pernah edit migration yang sudah di-commit.
 - **`Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Jaminan ownership
   adalah properti method `IoTClient` (`DeviceStatus`/`SendCommands`), bukan properti `Client` — `Do`
   melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis. agent) adalah tanggung jawab consumer.
+
+## Slop History
+
+Temuan AI yang sudah dibantah — jangan ulangi.
+
+- **`Do(ctx, method, path, body []byte)` bukan anti-pattern.** Pedoman "prefer io.Reader" tidak berlaku
+  di sini karena dua constraint domain yang tidak bisa dinegosiasi: (1) signing Tuya wajib `SHA256(body)`
+  sebelum request dikirim — body harus ter-materialisasi penuh; (2) retry-on-1010 wajib me-replay body
+  ke attempt kedua — `io.Reader` sekali-pakai tidak bisa di-replay tanpa buffer ke `[]byte` toh.
+  Mengubah ke `io.Reader` hanya memindahkan `io.ReadAll` ke dalam `Do`, plus API berbohong soal streaming.
+  Caller pun sudah pegang `[]byte` (dari `json.Marshal`). `[]byte` adalah pilihan yang benar.
+
+- **`IoTClient` tidak menyediakan interface — itu benar, bukan kelalaian.** Idiom Go: "accept interfaces,
+  return structs." Consumer mendefinisikan interface sesempit yang ia butuh di paketnya sendiri. Library
+  yang menyediakan interface spekulatif menanggung beban kompatibilitas seumur hidup dan akan melebar
+  tiap domain baru (home.go, space.go) ditambahkan. Mocking adalah concern consumer, bukan library.
+
+- **`enrichDevices` pakai `sync.Mutex` + `errors.Join`, bukan `errgroup` — disengaja.** Semantiknya
+  **collect-all**: agent ingin tahu SEMUA device yang gagal enrich dalam satu panggilan. `errgroup.WithContext`
+  itu **fail-fast** (membatalkan sibling saat error pertama) — kontrak berbeda. "Context propagation gratis"
+  yang sering disebut = pembatalan-saat-error-pertama = justru menghilangkan error device lain. Pindah ke
+  errgroup hanya tepat jika fail-fast memang diinginkan; saat ini itu regresi perilaku, bukan cleanup.
+  (Catatan: `wg.Go` di kode ini adalah `sync.WaitGroup.Go` dari Go 1.25, BUKAN errgroup.)
+
+- **`enrichDevices` pakai `sync.WaitGroup.Go` + `errors.Join`, bukan `errgroup.WithContext` — itu benar.**
+  `errgroup.WithContext` mengubah semantik ke *fail-fast*: goroutine pertama yang error membatalkan sisanya.
+  `enrichDevices` justru ingin *collect-all*: semua channel name diambil, semua error dikumpulkan, baru
+  dikembalikan sekaligus. Menggantinya dengan errgroup merusak semantik yang diinginkan.
+
+- **`context.Background()` di `New()` bukan masalah.** `New()` menerima `WithHTTPClient(hc)` — caller
+  yang butuh kontrol timeout/cancellation mengonfigurasinya di `*http.Client`. Itu mekanisme yang tepat
+  untuk prefetch saat konstruksi.
 
 ## Conventions
 
