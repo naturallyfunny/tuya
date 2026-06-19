@@ -12,10 +12,10 @@ import (
 )
 
 type signature struct {
-	Sign       string `json:"sign"`
-	Timestamp  string `json:"t"`
-	Nonce      string `json:"nonce"`
-	SignMethod string `json:"sign_method"`
+	Sign       string
+	Timestamp  string
+	Nonce      string
+	SignMethod string
 }
 
 // generateSignature computes the Tuya Cloud OpenAPI request signature. The
