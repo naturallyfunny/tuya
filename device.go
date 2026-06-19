@@ -176,10 +176,7 @@ func (c *Client) enrichDevices(ctx context.Context, devices []Device) error {
 	)
 
 	for _, device := range devicesToEnrich {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			path := fmt.Sprintf("/v1.0/devices/%s/multiple-names", device.ID)
 			raw, err := c.Do(ctx, http.MethodGet, path, nil)
 			if err != nil {
@@ -199,7 +196,7 @@ func (c *Client) enrichDevices(ctx context.Context, devices []Device) error {
 				}
 			}
 			device.CodeNameMapping = channels
-		}()
+		})
 	}
 
 	wg.Wait()
