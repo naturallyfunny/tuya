@@ -17,19 +17,19 @@ kendala domain (signing wajib hash full-body, retry me-replay body, collect-all 
 ```
 client.go      (root, package tuya) Owner-scoped door: Account, ErrAccountNotLinked,
                ErrDeviceNotOwned, AccountStore interface, IoT interface (di-satisfy
-               *cloud.IoTClient), Client (resolves owner→uid via store, asserts ownership via
+               *cloud.IoT), Client (resolves owner→uid via store, asserts ownership via
                assertOwned+HasDevice, lalu delegate ke IoT). Pintu tunggal yang dipakai
                agent — tidak bisa dibuka tanpa resolve owner lebih dulu.
 client_test.go (package tuya_test) unit test Client lewat fake IoT + fake AccountStore:
                happy path + ErrAccountNotLinked / ErrDeviceNotOwned, dan short-circuit guard.
 cloud/         Package cloud — layer Tuya murni (keyed by Tuya UID, tanpa konsep owner).
   client.go    cloud.Client (transport: token cache/refresh app-level, HMAC-SHA256 signing, Do
-               dengan retry-on-1010) + IoTClient (facade, membungkus *Client) + NewIoTClient.
-               Operasi domain menempel di IoTClient tapi DITULIS di file domain masing-masing.
+               dengan retry-on-1010) + IoT (facade, membungkus *Client) + NewIoT.
+               Operasi domain menempel di IoT tapi DITULIS di file domain masing-masing.
   auth.go      Concern auth: request signing (signTokenRequest/signBusinessRequest, hmacSign,
                setAuthHeaders) + token lifecycle (token app-level grant_type=1, fetch/update/
                ensureValidToken). Tuya tanda-tangani token-request vs business-request berbeda.
-  device.go    Domain device: tipe Device/DataPoint/Channel, dan method *IoTClient:
+  device.go    Domain device: tipe Device/DataPoint/Channel, dan method *IoT:
                ListDevices (uid-addressed, enriched), DeviceStatus/SendCommands (device-
                addressed, tanpa ownership guard), HasDevice (lean membership check untuk
                tuya.Client.assertOwned), enrichDevices (channel-name multi-gang kategori
@@ -44,7 +44,7 @@ Dependency direction acyclic: **postgres → tuya → cloud**.
 
 ## Cara Pakai
 
-Tiga tier yang dirangkai consumer: `cloud.Client` (transport), `cloud.IoTClient` (facade
+Tiga tier yang dirangkai consumer: `cloud.Client` (transport), `cloud.IoT` (facade
 operasi domain berbasis device/uid), dan `tuya.Client` (root, facade berbasis ownerID yang
 memegang ownership guard). Default & cara termudah untuk agent: pakai `tuya.Client`.
 
@@ -53,7 +53,7 @@ memegang ownership guard). Default & cara termudah untuk agent: pakai `tuya.Clie
 store, err := postgres.NewAccountStore(ctx, pool, postgres.WithAutoMigrate())
 
 transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
-iot := cloud.NewIoTClient(transport)
+iot := cloud.NewIoT(transport)
 client := tuya.New(iot, store) // postgres.Store satisfies tuya.AccountStore
 
 // Semua resolve owner→uid + ownership guard ditangani tuya.Client
@@ -62,7 +62,7 @@ status, err := client.DeviceStatus(ctx, ownerID, deviceID)
 err = client.SendCommands(ctx, ownerID, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
-`cloud.IoTClient` bisa dipakai langsung jika consumer sudah pegang tuyaUID dan tidak butuh
+`cloud.IoT` bisa dipakai langsung jika consumer sudah pegang tuyaUID dan tidak butuh
 ownership guard (trusted context). `DeviceStatus`/`SendCommands` device-addressed — tidak butuh uid.
 
 ```go
@@ -89,25 +89,25 @@ Jangan pernah edit migration yang sudah di-commit.
   per-user. `cloud.Client` me-refresh sendiri saat expiry / saat Tuya balas code 1010. Tidak perlu token store.
 - **Layout: pintu owner-scoped di root, layer Tuya murni di `cloud/`.** Library ini "tool dipanggil
   AI agent", jadi surface utama = pintu agent (`tuya.Client`) dan ia hidup di root. Layer trusted
-  device-addressed (`cloud.Client`/`cloud.IoTClient`) didemot ke subpackage `cloud`. Ini mengikuti
+  device-addressed (`cloud.Client`/`cloud.IoT`) didemot ke subpackage `cloud`. Ini mengikuti
   pola sibling `go.naturallyfunny.dev/spotify` (Client owner-keyed di root, inner client resolved
   disembunyikan). Tuya *berhak* mengekspos `cloud` standalone karena token project-level membuatnya
   berguna di trusted context tanpa user (beda dgn spotify yang per-user token wajib).
-- **Ownership guard hidup di `tuya.Client` (root), bukan `cloud.IoTClient`.** `cloud.IoTClient` adalah
+- **Ownership guard hidup di `tuya.Client` (root), bukan `cloud.IoT`.** `cloud.IoT` adalah
   trusted, device-addressed layer tanpa tenant check — caller yang memegangnya bisa mengakses device
   manapun dalam project. `tuya.Client` adalah pintu tunggal untuk agent: setiap call melaluinya
   harus resolve owner lebih dulu, dan ownership diverifikasi via `HasDevice` (lean, tanpa enrichment)
   sebelum command diteruskan. Guard ini *lebih kuat* di root: tidak bisa di-bypass tanpa melewati
   `tuya.Client`.
-- **Ownership check via list-then-contains** (`tuya.Client.assertOwned` → `cloud.IoTClient.HasDevice`).
+- **Ownership check via list-then-contains** (`tuya.Client.assertOwned` → `cloud.IoT.HasDevice`).
   Tiap `SendCommands`/`DeviceStatus` melisting device akun (raw, tanpa enrichment) lalu cek keanggotaan.
   Aman & sederhana untuk traffic rendah; caching ditunda sampai ada kebutuhan throughput nyata.
-- **Operasi domain diorganisir per-file di `cloud.IoTClient`.** Method `IoTClient` ditulis di file
-  domainnya (cloud/device.go; nanti cloud/home.go, cloud/space.go). Struct `IoTClient` + `NewIoTClient`
+- **Operasi domain diorganisir per-file di `cloud.IoT`.** Method `IoT` ditulis di file
+  domainnya (cloud/device.go; nanti cloud/home.go, cloud/space.go). Struct `IoT` + `NewIoT`
   hidup di `cloud/client.go`, di samping transport.
 - **`ErrDeviceNotOwned` dan `ErrAccountNotLinked` hidup di root `tuya`.** Keduanya adalah konsep
   multi-tenant / owner-scoping, bukan konsep Tuya API — tempatnya di layer yang memiliki owner.
-- **Empat concern dipisah dengan jelas.** `cloud.Client` transport; `cloud.IoTClient` device-addressed
+- **Empat concern dipisah dengan jelas.** `cloud.Client` transport; `cloud.IoT` device-addressed
   Tuya facade; `tuya.Client` owner-scoped facade dengan ownership guard; `postgres.Store` account mapping.
   Interface `AccountStore` dan `IoT` didefinisikan di root `tuya` (consumer), bukan di implementor —
   sesuai idiom Go "accept interfaces, return structs".
@@ -126,10 +126,10 @@ Temuan AI yang sudah dibantah — jangan ulangi.
   Mengubah ke `io.Reader` hanya memindahkan `io.ReadAll` ke dalam `Do`, plus API berbohong soal streaming.
   Caller pun sudah pegang `[]byte` (dari `json.Marshal`). `[]byte` adalah pilihan yang benar.
 
-- **`cloud` tidak mengekspor interface untuk `IoTClient` — itu benar, bukan kelalaian.** Idiom Go:
-  "accept interfaces, return structs." `cloud.NewIoTClient` mengembalikan `*cloud.IoTClient` (concrete).
+- **`cloud` tidak mengekspor interface untuk `IoT` — itu benar, bukan kelalaian.** Idiom Go:
+  "accept interfaces, return structs." `cloud.NewIoT` mengembalikan `*cloud.IoT` (concrete).
   Yang mendefinisikan interface adalah *consumer*: root `tuya` mendeklarasikan `tuya.IoT` sesempit
-  kebutuhan `tuya.Client` (di-satisfy `*cloud.IoTClient`) — ini justru penerapan idiom yang sama, bukan
+  kebutuhan `tuya.Client` (di-satisfy `*cloud.IoT`) — ini justru penerapan idiom yang sama, bukan
   pelanggaran. Jangan minta `cloud` mengekspor interface spekulatif: itu menanggung beban kompatibilitas
   seumur hidup dan melebar tiap domain baru (home.go, space.go). Mocking adalah concern consumer.
 
@@ -145,9 +145,9 @@ Temuan AI yang sudah dibantah — jangan ulangi.
   `enrichDevices` justru ingin *collect-all*: semua channel name diambil, semua error dikumpulkan, baru
   dikembalikan sekaligus. Menggantinya dengan errgroup merusak semantik yang diinginkan.
 
-- **"Ownership guard ada di `IoTClient`" — sudah tidak benar sejak refactor Juni 2026.**
-  `cloud.IoTClient.DeviceStatus`/`SendCommands` sekarang device-addressed murni, tanpa `tuyaUID`
-  dan tanpa ownership check. Guard pindah ke `tuya.Client.assertOwned` (root). `cloud.IoTClient`
+- **"Ownership guard ada di `IoT`" — sudah tidak benar sejak refactor Juni 2026.**
+  `cloud.IoT.DeviceStatus`/`SendCommands` sekarang device-addressed murni, tanpa `tuyaUID`
+  dan tanpa ownership check. Guard pindah ke `tuya.Client.assertOwned` (root). `cloud.IoT`
   adalah trusted layer — siapapun yang memegangnya bisa mengakses device apapun dalam project.
   Jangan flag ini sebagai kelemahan; itu keputusan sadar. Audit ownership → lihat root `client.go`.
 
@@ -157,7 +157,7 @@ Temuan AI yang sudah dibantah — jangan ulangi.
 
 ## Conventions
 
-- `cloud.New(...)` mengembalikan `*cloud.Client` (transport); `cloud.NewIoTClient(c)` membungkusnya jadi `*cloud.IoTClient` (facade domain)
+- `cloud.New(...)` mengembalikan `*cloud.Client` (transport); `cloud.NewIoT(c)` membungkusnya jadi `*cloud.IoT` (facade domain)
 - `tuya.New(iot, store)` mengembalikan `*tuya.Client` (root, pintu owner-scoped); `iot` diterima sebagai interface `tuya.IoT`
 - `Account`, `ErrAccountNotLinked`, `ErrDeviceNotOwned`, interface `AccountStore` & `IoT` hidup di root `tuya` (consumer side)
 - `postgres.Store` mengimplementasikan `tuya.AccountStore`, mengembalikan `tuya.Account` (import root `tuya`)

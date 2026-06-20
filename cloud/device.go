@@ -38,7 +38,7 @@ type Device struct {
 
 // ListDevices returns every device on the account, each with its current
 // status. Multi-gang switches/outlets are enriched with per-channel names.
-func (c *IoTClient) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	devices, err := c.listDevices(ctx, tuyaUID)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (c *IoTClient) ListDevices(ctx context.Context, tuyaUID string) ([]Device, 
 
 // DeviceStatus reads the current status (DPs) of a device. The caller is
 // responsible for verifying ownership before calling (see app.Client).
-func (c *IoTClient) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
+func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -75,7 +75,7 @@ func (c *IoTClient) DeviceStatus(ctx context.Context, deviceID string) ([]DataPo
 
 // SendCommands sends DP commands to a device. The caller is responsible for
 // verifying ownership before calling (see app.Client).
-func (c *IoTClient) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
+func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID)
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`
@@ -91,7 +91,7 @@ func (c *IoTClient) SendCommands(ctx context.Context, deviceID string, commands 
 }
 
 // listDevices fetches the raw device list for a Tuya UID.
-func (c *IoTClient) listDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+func (c *IoT) listDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	path := fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -108,7 +108,7 @@ func (c *IoTClient) listDevices(ctx context.Context, tuyaUID string) ([]Device, 
 // HasDevice reports whether deviceID appears in the account's device list.
 // It uses the raw (unenriched) list — no channel-name fetches — so it is lean
 // enough for an ownership membership check.
-func (c *IoTClient) HasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error) {
+func (c *IoT) HasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error) {
 	devices, err := c.listDevices(ctx, tuyaUID)
 	if err != nil {
 		return false, fmt.Errorf("verify device ownership: %w", err)
@@ -124,7 +124,7 @@ func (c *IoTClient) HasDevice(ctx context.Context, tuyaUID, deviceID string) (bo
 // enrichDevices fills CodeNameMapping for multi-gang switches/outlets (category
 // "kg" or "cz*") by fetching each one's channel names concurrently. Other
 // devices get an empty, non-nil mapping.
-func (c *IoTClient) enrichDevices(ctx context.Context, devices []Device) error {
+func (c *IoT) enrichDevices(ctx context.Context, devices []Device) error {
 	var devicesToEnrich []*Device
 	for idx := range devices {
 		device := &devices[idx]

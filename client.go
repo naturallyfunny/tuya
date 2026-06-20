@@ -6,7 +6,7 @@
 // The owner concept is foreign to Tuya. The cloud subpackage speaks the Tuya
 // Cloud OpenAPI and is keyed by Tuya UID; an owner ID is the consumer's
 // app-domain identity. This package quarantines that foreign concept, including
-// the ownership guard: cloud.IoTClient is a trusted, device-addressed layer with
+// the ownership guard: cloud.IoT is a trusted, device-addressed layer with
 // no tenant check; Client is the single door an untrusted agent goes through, and
 // it cannot be opened without resolving an owner first. Mapping owner -> Tuya UID
 // is delegated to an AccountStore (a ready-made PostgreSQL one lives in the
@@ -54,7 +54,7 @@ type AccountStore interface {
 }
 
 // IoT is the device-addressed Tuya facade this package drives, narrowed to the
-// methods Client needs. *cloud.IoTClient satisfies it. It is defined here, on the
+// methods Client needs. *cloud.IoT satisfies it. It is defined here, on the
 // consumer side, so Client can be unit-tested against a fake and so the cloud
 // package stays free of speculative interfaces.
 type IoT interface {
@@ -73,8 +73,8 @@ type Client struct {
 	store AccountStore
 }
 
-// New builds a Client over the IoT facade and an account store. cloud.NewIoTClient
-// returns a *cloud.IoTClient that satisfies IoT, and postgres.Store satisfies
+// New builds a Client over the IoT facade and an account store. cloud.NewIoT
+// returns a *cloud.IoT that satisfies IoT, and postgres.Store satisfies
 // AccountStore, but any implementations of the interfaces work.
 func New(iot IoT, store AccountStore) *Client {
 	return &Client{iot: iot, store: store}

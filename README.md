@@ -29,7 +29,7 @@ concept). The root composes over it:
   access ID/secret yields an access token that `Client` caches in memory and refreshes on its
   own (lazily on expiry, reactively on Tuya code 1010). No per-user token store. Handles HMAC
   signing and exposes `Do`, a raw escape hatch for endpoints not yet wrapped.
-- **`cloud.IoTClient`** — a trusted, device-addressed facade over a `cloud.Client`.
+- **`cloud.IoT`** — a trusted, device-addressed facade over a `cloud.Client`.
   `ListDevices` is UID-addressed (the uid is the Tuya resource path); `DeviceStatus` and
   `SendCommands` are pure device-addressed calls — no ownership guard. A caller holding it can
   act on any device the project can reach; ownership is `tuya.Client`'s job. It satisfies the
@@ -48,7 +48,7 @@ Three consumer tiers fall out of this layout — bind the one you need:
 | You need | Use |
 |---|---|
 | transport only (token lifecycle, signing, `Do`) | `cloud.Client` |
-| the IoT device wrapper (device-addressed, by UID) | `cloud.IoTClient` |
+| the IoT device wrapper (device-addressed, by UID) | `cloud.IoT` |
 | owner ↔ account management + ownership guard | `tuya.Client` |
 
 ## Setup
@@ -65,7 +65,7 @@ transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com"
 if err != nil {
     log.Fatal(err)
 }
-iot := cloud.NewIoTClient(transport)
+iot := cloud.NewIoT(transport)
 client := tuya.New(iot, store) // postgres.Store satisfies tuya.AccountStore
 ```
 
@@ -98,7 +98,7 @@ owner-ID / Tuya-UID mapping):
 acc, err := client.Account(ctx, ownerID)
 ```
 
-Need raw cloud access? `cloud.IoTClient` is trusted and device-addressed — no ownership guard:
+Need raw cloud access? `cloud.IoT` is trusted and device-addressed — no ownership guard:
 
 ```go
 acc, err := store.Get(ctx, ownerID)
@@ -107,7 +107,7 @@ status, err := iot.DeviceStatus(ctx, deviceID)       // device-addressed, no gua
 ```
 
 `cloud.Client.Do` is a raw escape hatch for endpoints not yet wrapped — it also carries no
-guard. Don't expose `cloud.IoTClient` or `cloud.Client.Do` to an untrusted caller (e.g. an
+guard. Don't expose `cloud.IoT` or `cloud.Client.Do` to an untrusted caller (e.g. an
 agent); route everything through `tuya.Client` instead.
 
 ## Linking accounts

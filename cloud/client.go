@@ -3,9 +3,9 @@
 //
 // It speaks Tuya at the app (project) level — a single access ID/secret yields
 // an access token that Client caches and refreshes on its own. Two orthogonal
-// pieces compose here: Client is the transport (signing, token, Do); IoTClient
+// pieces compose here: Client is the transport (signing, token, Do); IoT
 // wraps a Client and performs device operations against a Tuya account UID.
-// IoTClient carries no tenant guard — mapping an opaque owner ID to a human's
+// IoT carries no tenant guard — mapping an opaque owner ID to a human's
 // Tuya UID and asserting ownership is the root tuya package's concern.
 package cloud
 
@@ -147,16 +147,16 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
 }
 
-// IoTClient is a trusted, device-addressed facade over a transport Client.
-// Domain operations attach to it, organized per domain (device.go, and future
+// IoT is a trusted, device-addressed facade over a transport Client. Domain
+// operations attach to it, organized per domain (device.go, and future
 // home.go / space.go). It carries no tenant guard — ownership is the concern of
-// app.Client, the single door an untrusted caller goes through. Client.Do is a
+// tuya.Client, the single door an untrusted caller goes through. Client.Do is a
 // raw escape hatch for endpoints not yet wrapped.
-type IoTClient struct {
+type IoT struct {
 	client *Client
 }
 
-// NewIoTClient wraps a transport Client with IoT operations.
-func NewIoTClient(c *Client) *IoTClient {
-	return &IoTClient{client: c}
+// NewIoT wraps a transport Client with IoT operations.
+func NewIoT(c *Client) *IoT {
+	return &IoT{client: c}
 }
