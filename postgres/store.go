@@ -1,6 +1,6 @@
 // Package postgres provides a PostgreSQL-backed account mapping for the Tuya
-// library: the owner-ID → Tuya-UID link a consumer resolves before driving
-// devices via tuya.IoT.
+// library: the owner-ID → Tuya-UID link a consumer resolves (via tuya.Client)
+// before driving devices.
 package postgres
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"go.naturallyfunny.dev/tuya/app"
+	"go.naturallyfunny.dev/tuya"
 )
 
 //go:embed migrations
@@ -30,8 +30,8 @@ type Querier interface {
 // Store maps an owner ID to the human's Tuya account UID, backed by PostgreSQL.
 // It owns the full lifecycle of that mapping: Get reads it, Link creates or
 // refreshes it, and Unlink soft-deletes it. A consumer links an account once
-// (after the human authorizes Tuya), then resolves owner -> UID with Get before
-// driving devices via tuya.IoT.
+// (after the human authorizes Tuya), then drives devices by owner ID via
+// tuya.Client, which resolves owner -> UID with Get.
 type Store struct {
 	db          Querier
 	autoMigrate bool
@@ -70,19 +70,19 @@ func NewAccountStore(ctx context.Context, db Querier, opts ...Option) (*Store, e
 	return s, nil
 }
 
-// Get returns the full Account linked to ownerID, or app.ErrAccountNotLinked if
+// Get returns the full Account linked to ownerID, or tuya.ErrAccountNotLinked if
 // none is linked.
-func (s *Store) Get(ctx context.Context, ownerID string) (app.Account, error) {
-	var acc app.Account
+func (s *Store) Get(ctx context.Context, ownerID string) (tuya.Account, error) {
+	var acc tuya.Account
 	err := s.db.QueryRow(ctx,
 		`SELECT owner_id, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner_id = $1 AND deleted_at IS NULL`,
 		ownerID,
 	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return app.Account{}, app.ErrAccountNotLinked
+			return tuya.Account{}, tuya.ErrAccountNotLinked
 		}
-		return app.Account{}, fmt.Errorf("get account: %w", err)
+		return tuya.Account{}, fmt.Errorf("get account: %w", err)
 	}
 	return acc, nil
 }
@@ -91,8 +91,8 @@ func (s *Store) Get(ctx context.Context, ownerID string) (app.Account, error) {
 // is an upsert: linking an owner that is already linked refreshes the UID and
 // updated_at, and re-linking a previously unlinked owner revives the row
 // (clearing deleted_at) rather than failing on the primary key.
-func (s *Store) Link(ctx context.Context, ownerID, tuyaUID string) (app.Account, error) {
-	var acc app.Account
+func (s *Store) Link(ctx context.Context, ownerID, tuyaUID string) (tuya.Account, error) {
+	var acc tuya.Account
 	err := s.db.QueryRow(ctx,
 		`INSERT INTO tuya_app_accounts (owner_id, tuya_uid)
 		 VALUES ($1, $2)
@@ -102,14 +102,14 @@ func (s *Store) Link(ctx context.Context, ownerID, tuyaUID string) (app.Account,
 		ownerID, tuyaUID,
 	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
 	if err != nil {
-		return app.Account{}, fmt.Errorf("link account: %w", err)
+		return tuya.Account{}, fmt.Errorf("link account: %w", err)
 	}
 	return acc, nil
 }
 
 // Unlink soft-deletes the mapping for ownerID (setting deleted_at), so Get stops
 // returning it while the row is preserved for audit. Returns
-// app.ErrAccountNotLinked if no live mapping exists.
+// tuya.ErrAccountNotLinked if no live mapping exists.
 func (s *Store) Unlink(ctx context.Context, ownerID string) error {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE tuya_app_accounts
@@ -121,7 +121,7 @@ func (s *Store) Unlink(ctx context.Context, ownerID string) error {
 		return fmt.Errorf("unlink account: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return app.ErrAccountNotLinked
+		return tuya.ErrAccountNotLinked
 	}
 	return nil
 }

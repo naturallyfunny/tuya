@@ -1,4 +1,4 @@
-package tuya
+package cloud
 
 import (
 	"context"

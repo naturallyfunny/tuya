@@ -1,164 +1,140 @@
-// Package tuya is a reusable library for the Tuya Cloud OpenAPI, built to be
-// driven as a tool by an AI agent: low traffic, one action per user intent
-// (list devices, read a device's state, send it a command).
+// Package tuya is the owner-scoped door of the library: callers drive Tuya
+// devices by their own opaque owner ID instead of a Tuya UID. It is the surface
+// an AI agent goes through — low traffic, one action per user intent (list
+// devices, read a device's state, send it a command).
 //
-// The library speaks Tuya at the app (project) level — a single access
-// ID/secret yields an access token that the Client caches and refreshes on its
-// own. It is split into orthogonal pieces a consumer composes: Client is the
-// transport (signing, token, Do); IoT wraps a Client and performs device
-// operations against a Tuya account UID. Mapping an opaque owner ID to that
-// human's Tuya UID is the consumer's concern — a ready-made PostgreSQL account
-// store lives in the postgres subpackage.
+// The owner concept is foreign to Tuya. The cloud subpackage speaks the Tuya
+// Cloud OpenAPI and is keyed by Tuya UID; an owner ID is the consumer's
+// app-domain identity. This package quarantines that foreign concept, including
+// the ownership guard: cloud.IoTClient is a trusted, device-addressed layer with
+// no tenant check; Client is the single door an untrusted agent goes through, and
+// it cannot be opened without resolving an owner first. Mapping owner -> Tuya UID
+// is delegated to an AccountStore (a ready-made PostgreSQL one lives in the
+// postgres subpackage).
+//
+// Dependency direction is acyclic: postgres -> tuya -> cloud.
 package tuya
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"sync"
+	"time"
+
+	"go.naturallyfunny.dev/tuya/cloud"
 )
 
-// response is the envelope every Tuya Cloud OpenAPI call returns.
-type response struct {
-	Success bool   `json:"success"`
-	T       int64  `json:"t"`
-	Tid     string `json:"tid"`
-
-	Result json.RawMessage `json:"result,omitempty"`
-
-	Code int    `json:"code,omitempty"`
-	Msg  string `json:"msg,omitempty"`
+// Account links an opaque owner ID (whatever the consumer uses to identify a
+// human) to that human's Tuya account UID. Devices are listed and controlled
+// under the UID.
+type Account struct {
+	OwnerID   string    `json:"owner_id"`
+	TuyaUID   string    `json:"tuya_uid"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Client talks to the Tuya Cloud OpenAPI at the app level. The access token is
-// cached in memory and refreshed on demand (lazily on expiry, and reactively
-// when Tuya reports code 1010); there is no per-user token store because the
-// credential is project-wide.
+// ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
+// is no owner-ID -> Tuya-UID mapping. Stores return it when no mapping exists and
+// Client surfaces it, so consumers can route the human into the linking flow.
+var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
+
+// ErrDeviceNotOwned indicates the targeted device does not belong to the owner's
+// Tuya account. Returned by device commands before anything is sent, so an agent
+// can never drive a device that isn't the human's.
+var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
+
+// AccountStore resolves and manages the owner -> Tuya UID mapping. Get reads it,
+// Link creates or refreshes it, and Unlink removes it. postgres.Store satisfies
+// this interface implicitly; consumers may supply any backend.
+type AccountStore interface {
+	Get(ctx context.Context, ownerID string) (Account, error)
+	Link(ctx context.Context, ownerID, tuyaUID string) (Account, error)
+	Unlink(ctx context.Context, ownerID string) error
+}
+
+// IoT is the device-addressed Tuya facade this package drives, narrowed to the
+// methods Client needs. *cloud.IoTClient satisfies it. It is defined here, on the
+// consumer side, so Client can be unit-tested against a fake and so the cloud
+// package stays free of speculative interfaces.
+type IoT interface {
+	ListDevices(ctx context.Context, tuyaUID string) ([]cloud.Device, error)
+	DeviceStatus(ctx context.Context, deviceID string) ([]cloud.DataPoint, error)
+	SendCommands(ctx context.Context, deviceID string, commands []cloud.DataPoint) error
+	HasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error)
+}
+
+// Client drives Tuya devices for an owner, resolving owner -> UID via the store
+// and delegating device work to the IoT facade. It is the ownership boundary:
+// every mutating call asserts the device belongs to the resolved account before
+// delegating to the (trust-all) IoT layer.
 type Client struct {
-	accessID     string
-	accessSecret string
-	baseURL      string
-	httpClient   *http.Client
-	token        *token
-	tokenLock    sync.RWMutex
+	iot   IoT
+	store AccountStore
 }
 
-// Option configures a Client at construction time. The zero-configuration Client
-// is fully usable; options only override defaults (currently just the HTTP
-// client). New options can be added without breaking the New signature.
-type Option func(*Client)
-
-// WithHTTPClient sets the http.Client used for every Tuya request, controlling
-// timeouts and transport. Without it, New uses http.DefaultClient.
-func WithHTTPClient(httpClient *http.Client) Option {
-	return func(c *Client) {
-		c.httpClient = httpClient
-	}
+// New builds a Client over the IoT facade and an account store. cloud.NewIoTClient
+// returns a *cloud.IoTClient that satisfies IoT, and postgres.Store satisfies
+// AccountStore, but any implementations of the interfaces work.
+func New(iot IoT, store AccountStore) *Client {
+	return &Client{iot: iot, store: store}
 }
 
-// New builds a Client. accessID and accessSecret are the Tuya Cloud project
-// credentials; baseURL selects the regional data-center endpoint (e.g.
-// https://openapi.tuyaus.com for the US, tuyaeu/tuyacn/tuyain for EU/China/India).
-// Behaviour is tuned with Options such as WithHTTPClient. New prefetches an
-// access token so a bad credential or unreachable region fails here, at wiring
-// time, not on the first device call. Wrap the Client with NewIoT to perform
-// device operations.
-func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error) {
-	client := &Client{
-		accessID:     accessID,
-		accessSecret: accessSecret,
-		baseURL:      baseURL,
-		httpClient:   http.DefaultClient,
-	}
-
-	for _, opt := range opts {
-		opt(client)
-	}
-	if client.httpClient == nil {
-		client.httpClient = http.DefaultClient
-	}
-
-	if err := client.ensureValidToken(context.Background()); err != nil {
-		return nil, fmt.Errorf("tuya: New: prefetch token: %w", err)
-	}
-
-	return client, nil
+// Account returns the linked Tuya account for the owner. Useful for surfaces
+// that need to surface the owner-ID / Tuya-UID mapping (e.g. a get_account tool).
+func (c *Client) Account(ctx context.Context, ownerID string) (Account, error) {
+	return c.store.Get(ctx, ownerID)
 }
 
-// Do performs a signed, authenticated request against the Tuya Cloud OpenAPI. On
-// a token-expired response (code 1010) it refreshes once and retries, so callers
-// never see a stale-token failure.
-func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
-	const maxIoTRequestAttempts = 2
-	for attempt := 0; attempt < maxIoTRequestAttempts; attempt++ {
-		fullURL := c.baseURL + path
-
-		sig, err := c.signBusinessRequest(method, path, body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate signature: %w", err)
-		}
-
-		bodyReader := bytes.NewReader(body)
-		httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request to %s: %w", fullURL, err)
-		}
-
-		if len(body) > 0 {
-			httpReq.Header.Set("Content-Type", "application/json")
-		}
-		setAuthHeaders(httpReq, c.accessID, sig)
-
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("request to %s failed: %w", fullURL, err)
-		}
-		respBodyBytes, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read response from %s: %w", fullURL, err)
-		}
-
-		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("request to %s returned non-200 status code: %d, body: %s", fullURL, resp.StatusCode, string(respBodyBytes))
-		}
-
-		var tuyaResp response
-		if err := json.Unmarshal(respBodyBytes, &tuyaResp); err != nil {
-			return nil, fmt.Errorf("failed to decode response from %s: %w", fullURL, err)
-		}
-
-		if tuyaResp.Success {
-			return tuyaResp.Result, nil
-		}
-
-		const tokenExpiredTuyaErrorCode = 1010
-		if tuyaResp.Code == tokenExpiredTuyaErrorCode && attempt == 0 {
-			if err := c.ensureValidToken(ctx); err != nil {
-				return nil, fmt.Errorf("failed to refresh token after Tuya error %d: %w", tuyaResp.Code, err)
-			}
-			continue
-		}
-
-		return nil, fmt.Errorf("tuya api error %d: %s", tuyaResp.Code, tuyaResp.Msg)
+// ListDevices resolves the owner then lists their devices, each with its current
+// status. Returns ErrAccountNotLinked (from the store) if the owner has no linked
+// account.
+func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]cloud.Device, error) {
+	acc, err := c.store.Get(ctx, ownerID)
+	if err != nil {
+		return nil, err
 	}
-
-	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
+	return c.iot.ListDevices(ctx, acc.TuyaUID)
 }
 
-// IoTClient is a trusted, device-addressed facade over a transport Client.
-// Domain operations attach to it, organized per domain (device.go, and future
-// home.go / space.go). It carries no tenant guard — ownership is the concern of
-// app.Client, the single door an untrusted caller goes through. Client.Do is a
-// raw escape hatch for endpoints not yet wrapped.
-type IoTClient struct {
-	client *Client
+// DeviceStatus resolves the owner, asserts the device belongs to them, then
+// reads one device's status. Returns ErrAccountNotLinked if the owner has no
+// linked account, or ErrDeviceNotOwned if the device isn't on the resolved account.
+func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]cloud.DataPoint, error) {
+	acc, err := c.store.Get(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
+		return nil, err
+	}
+	return c.iot.DeviceStatus(ctx, deviceID)
 }
 
-// NewIoTClient wraps a transport Client with IoT operations.
-func NewIoTClient(c *Client) *IoTClient {
-	return &IoTClient{client: c}
+// SendCommands resolves the owner, asserts the device belongs to them, then sends
+// DP commands to it. Returns ErrAccountNotLinked if the owner has no linked
+// account, or ErrDeviceNotOwned if the device isn't on the resolved account.
+func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, cmds []cloud.DataPoint) error {
+	acc, err := c.store.Get(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
+		return err
+	}
+	return c.iot.SendCommands(ctx, deviceID, cmds)
+}
+
+// assertOwned checks that deviceID appears in the Tuya account's device list,
+// returning ErrDeviceNotOwned if not. Uses IoT.HasDevice — a lean, unenriched
+// check — so no channel-name fetches happen on ownership verification.
+func (c *Client) assertOwned(ctx context.Context, tuyaUID, deviceID string) error {
+	owned, err := c.iot.HasDevice(ctx, tuyaUID, deviceID)
+	if err != nil {
+		return fmt.Errorf("verify device ownership: %w", err)
+	}
+	if !owned {
+		return ErrDeviceNotOwned
+	}
+	return nil
 }

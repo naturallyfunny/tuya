@@ -13,31 +13,43 @@ go get go.naturallyfunny.dev/tuya
 
 ## Concepts
 
-The root `tuya` package is **pure Tuya** (keyed by Tuya UID) and composes from two
-orthogonal pieces:
+The root `tuya` package is the **owner-scoped door** — the surface an AI agent goes through.
+It is keyed by your own opaque **owner ID** and owns the ownership guard:
 
-- **`Client`** — the transport. Speaks Tuya at the **app (project) level**: a single access
-  ID/secret yields an access token that `Client` caches in memory and refreshes on its own
-  (lazily on expiry, reactively on Tuya code 1010). No per-user token store. Handles HMAC
+- **`tuya.Client`** — resolves owner → Tuya UID via an `AccountStore`, asserts the target
+  device belongs to that account (a lean `HasDevice` membership check), then delegates the
+  actual call. It owns `Account`, `ErrAccountNotLinked`, `ErrDeviceNotOwned`, the
+  `AccountStore` interface, and the `IoT` interface it drives. It is the single door an
+  untrusted agent goes through — it cannot be opened without resolving an owner first.
+
+The pure-Tuya layer lives in the **`tuya/cloud`** subpackage (keyed by Tuya UID, no owner
+concept). The root composes over it:
+
+- **`cloud.Client`** — the transport. Speaks Tuya at the **app (project) level**: a single
+  access ID/secret yields an access token that `Client` caches in memory and refreshes on its
+  own (lazily on expiry, reactively on Tuya code 1010). No per-user token store. Handles HMAC
   signing and exposes `Do`, a raw escape hatch for endpoints not yet wrapped.
-- **`IoTClient`** — a trusted, device-addressed facade over a `Client`. `ListDevices` is
-  UID-addressed (the uid is the Tuya resource path). `DeviceStatus` and `SendCommands` are
-  pure device-addressed calls — no ownership guard. A caller holding `IoTClient` can act on
-  any device the project can reach; ownership is `app.Client`'s job.
+- **`cloud.IoTClient`** — a trusted, device-addressed facade over a `cloud.Client`.
+  `ListDevices` is UID-addressed (the uid is the Tuya resource path); `DeviceStatus` and
+  `SendCommands` are pure device-addressed calls — no ownership guard. A caller holding it can
+  act on any device the project can reach; ownership is `tuya.Client`'s job. It satisfies the
+  consumer-side `tuya.IoT` interface.
 
-The **owner ID** (whatever you use to identify a human) is not a Tuya concept, so it lives in
-subpackages — additive and optional, leaving the root pure Tuya:
+The PostgreSQL adapter for the owner → UID mapping:
 
-- **`app`** — the owner-scoped client. `app.Client` is the **ownership boundary**: it resolves
-  owner → UID, asserts the device belongs to that account (via a lean `IoTClient.HasDevice`
-  check), then delegates to the device-addressed `IoTClient`. `app` owns `Account`,
-  `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AccountStore` interface it consumes.
-  It is the single door an untrusted agent goes through.
-- **`postgres.Store`** — an adapter that implements `app.AccountStore` (implicitly), backing
-  the owner → UID mapping with PostgreSQL. A consumer links an account once, then drives
-  devices by owner ID via `app.Client`.
+- **`postgres.Store`** — implements `tuya.AccountStore` (implicitly), backing the owner → UID
+  mapping with PostgreSQL. A consumer links an account once, then drives devices by owner ID
+  via `tuya.Client`.
 
-Dependency direction is acyclic: **`postgres → app → tuya`**. The root never imports downward.
+Dependency direction is acyclic: **`postgres → tuya → cloud`**.
+
+Three consumer tiers fall out of this layout — bind the one you need:
+
+| You need | Use |
+|---|---|
+| transport only (token lifecycle, signing, `Do`) | `cloud.Client` |
+| the IoT device wrapper (device-addressed, by UID) | `cloud.IoTClient` |
+| owner ↔ account management + ownership guard | `tuya.Client` |
 
 ## Setup
 
@@ -49,45 +61,44 @@ if err != nil {
 }
 
 // baseURL selects the regional endpoint; WithHTTPClient is optional.
-client, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com")
+transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
 if err != nil {
     log.Fatal(err)
 }
-iot := tuya.NewIoTClient(client)
+iot := cloud.NewIoTClient(transport)
+client := tuya.New(iot, store) // postgres.Store satisfies tuya.AccountStore
 ```
 
 `baseURL` selects the data-center region: `openapi.tuyaus.com` (US), `.tuyaeu.com` (EU),
-`.tuyacn.com` (China), `.tuyain.com` (India). `tuya.New` prefetches an access token, so a
+`.tuyacn.com` (China), `.tuyain.com` (India). `cloud.New` prefetches an access token, so a
 bad credential or unreachable region fails here at wiring time, not on the first call.
 
 ## Usage
 
-Drive devices by owner ID with `app.Client` — it resolves owner → UID and enforces ownership:
+Drive devices by owner ID with `tuya.Client` — it resolves owner → UID and enforces ownership:
 
 ```go
-appClient := app.New(iot, store) // postgres.Store satisfies app.AccountStore
-
-devices, err := appClient.ListDevices(ctx, ownerID)      // typed devices + per-channel names
-if errors.Is(err, app.ErrAccountNotLinked) {
+devices, err := client.ListDevices(ctx, ownerID)      // typed devices + per-channel names
+if errors.Is(err, tuya.ErrAccountNotLinked) {
     // route the human into the account-linking flow
 }
-status, err := appClient.DeviceStatus(ctx, ownerID, id)  // asserts ownership, then reads status
-err = appClient.SendCommands(ctx, ownerID, id, []tuya.DataPoint{
-    {Code: "switch_1", Value: true},                     // asserts ownership, then sends
+status, err := client.DeviceStatus(ctx, ownerID, id)  // asserts ownership, then reads status
+err = client.SendCommands(ctx, ownerID, id, []cloud.DataPoint{
+    {Code: "switch_1", Value: true},                  // asserts ownership, then sends
 })
-if errors.Is(err, app.ErrDeviceNotOwned) {
+if errors.Is(err, tuya.ErrDeviceNotOwned) {
     // device doesn't belong to this owner
 }
 ```
 
-`app.Client.Account` returns the linked account (useful for surfaces that need to surface the
+`tuya.Client.Account` returns the linked account (useful for surfaces that need to surface the
 owner-ID / Tuya-UID mapping):
 
 ```go
-acc, err := appClient.Account(ctx, ownerID)
+acc, err := client.Account(ctx, ownerID)
 ```
 
-Need raw `IoTClient` access? It is trusted and device-addressed — no ownership guard:
+Need raw cloud access? `cloud.IoTClient` is trusted and device-addressed — no ownership guard:
 
 ```go
 acc, err := store.Get(ctx, ownerID)
@@ -95,9 +106,9 @@ devices, err := iot.ListDevices(ctx, acc.TuyaUID)   // uid-addressed
 status, err := iot.DeviceStatus(ctx, deviceID)       // device-addressed, no guard
 ```
 
-`Client.Do` is a raw escape hatch for endpoints not yet wrapped — it also carries no guard.
-Don't expose `IoTClient` or `Client.Do` to an untrusted caller (e.g. an agent); route
-everything through `app.Client` instead.
+`cloud.Client.Do` is a raw escape hatch for endpoints not yet wrapped — it also carries no
+guard. Don't expose `cloud.IoTClient` or `cloud.Client.Do` to an untrusted caller (e.g. an
+agent); route everything through `tuya.Client` instead.
 
 ## Linking accounts
 
