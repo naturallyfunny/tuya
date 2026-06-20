@@ -36,11 +36,6 @@ type Device struct {
 	CodeNameMapping []Channel   `json:"code_name_mapping"`
 }
 
-// ErrDeviceNotOwned indicates the targeted device does not belong to the Tuya
-// account. Returned by device commands before anything is sent, so an agent can
-// never drive a device that isn't the human's.
-var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
-
 // ListDevices returns every device on the account, each with its current
 // status. Multi-gang switches/outlets are enriched with per-channel names.
 func (c *IoTClient) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
@@ -60,13 +55,9 @@ func (c *IoTClient) ListDevices(ctx context.Context, tuyaUID string) ([]Device, 
 	return devices, nil
 }
 
-// DeviceStatus reads the current status (DPs) of one device on the account.
-// Returns ErrDeviceNotOwned if the device isn't on the account.
-func (c *IoTClient) DeviceStatus(ctx context.Context, tuyaUID, deviceID string) ([]DataPoint, error) {
-	if err := c.assertDeviceOwned(ctx, tuyaUID, deviceID); err != nil {
-		return nil, err
-	}
-
+// DeviceStatus reads the current status (DPs) of a device. The caller is
+// responsible for verifying ownership before calling (see app.Client).
+func (c *IoTClient) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -82,14 +73,9 @@ func (c *IoTClient) DeviceStatus(ctx context.Context, tuyaUID, deviceID string) 
 	return status, nil
 }
 
-// SendCommands sends DP commands to one device on the account. Returns
-// ErrDeviceNotOwned if the device isn't on the account, so an agent can never
-// drive a device that isn't the human's.
-func (c *IoTClient) SendCommands(ctx context.Context, tuyaUID, deviceID string, commands []DataPoint) error {
-	if err := c.assertDeviceOwned(ctx, tuyaUID, deviceID); err != nil {
-		return err
-	}
-
+// SendCommands sends DP commands to a device. The caller is responsible for
+// verifying ownership before calling (see app.Client).
+func (c *IoTClient) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID)
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`
@@ -119,20 +105,20 @@ func (c *IoTClient) listDevices(ctx context.Context, tuyaUID string) ([]Device, 
 	return devices, nil
 }
 
-// assertDeviceOwned verifies deviceID belongs to the Tuya UID, returning
-// ErrDeviceNotOwned otherwise. Ownership is checked by listing the account's
-// devices — adequate for low-traffic, one-action-per-intent agent use.
-func (c *IoTClient) assertDeviceOwned(ctx context.Context, tuyaUID, deviceID string) error {
+// HasDevice reports whether deviceID appears in the account's device list.
+// It uses the raw (unenriched) list — no channel-name fetches — so it is lean
+// enough for an ownership membership check.
+func (c *IoTClient) HasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error) {
 	devices, err := c.listDevices(ctx, tuyaUID)
 	if err != nil {
-		return fmt.Errorf("failed to verify device ownership: %w", err)
+		return false, fmt.Errorf("verify device ownership: %w", err)
 	}
 	for _, d := range devices {
 		if d.ID == deviceID {
-			return nil
+			return true, nil
 		}
 	}
-	return ErrDeviceNotOwned
+	return false, nil
 }
 
 // enrichDevices fills CodeNameMapping for multi-gang switches/outlets (category

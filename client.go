@@ -149,11 +149,11 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
 }
 
-// IoTClient performs Tuya IoT operations on top of a transport Client. It is the
-// facade a consumer holds: domain operations attach to it, organized per domain
-// (device.go, and future home.go / space.go), each enforcing its own ownership
-// checks. The ownership guarantee lives here, on the operation methods — not on
-// Client.Do, which is a raw escape hatch.
+// IoTClient is a trusted, device-addressed facade over a transport Client.
+// Domain operations attach to it, organized per domain (device.go, and future
+// home.go / space.go). It carries no tenant guard — ownership is the concern of
+// app.Client, the single door an untrusted caller goes through. Client.Do is a
+// raw escape hatch for endpoints not yet wrapped.
 type IoTClient struct {
 	client *Client
 }

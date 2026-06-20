@@ -21,10 +21,16 @@ client.go      Client (transport: token cache/refresh app-level, HMAC-SHA256 sig
 auth.go        Concern auth: request signing (signTokenRequest/signBusinessRequest, hmacSign,
                setAuthHeaders) + token lifecycle (token app-level grant_type=1, fetch/update/
                ensureValidToken). Tuya tanda-tangani token-request vs business-request berbeda.
-device.go      Domain device: tipe Device/DataPoint/Channel, ErrDeviceNotOwned, dan method
-               *IoTClient: ListDevices/DeviceStatus/SendCommands (berbasis tuyaUID),
-               assertDeviceOwned, enrichDevices (channel-name multi-gang kategori kg/cz*).
-               Domain baru → file baru (home.go, space.go), tiap file punya assert-nya sendiri.
+device.go      Domain device: tipe Device/DataPoint/Channel, dan method *IoTClient:
+               ListDevices (uid-addressed, enriched), DeviceStatus/SendCommands (device-
+               addressed, tanpa ownership guard), HasDevice (lean membership check untuk
+               app.assertOwned), enrichDevices (channel-name multi-gang kategori kg/cz*).
+               Domain baru → file baru (home.go, space.go).
+app/
+  client.go    Owner-scoped facade: Account, ErrAccountNotLinked, ErrDeviceNotOwned,
+               AccountStore interface, Client (resolves owner→uid, asserts ownership via
+               assertOwned+HasDevice, lalu delegate ke IoTClient). Ini pintu tunggal yang
+               dipakai agent — tidak bisa dibuka tanpa resolve owner lebih dulu.
 postgres/
   store.go     Account management (owner_id -> tuya_uid): Account, ErrAccountNotLinked,
                Store.Get/Link/Unlink, migrate. TANPA interface — tidak dikonsumsi paket tuya.
@@ -34,35 +40,31 @@ postgres/
 ## Cara Pakai
 
 Tiga potong ortogonal yang dirangkai consumer: `Client` (transport), `IoTClient` (facade
-operasi domain berbasis `tuyaUID`), dan `postgres.Store` (resolusi owner→uid). Consumer
-me-resolve owner sendiri lalu memanggil `IoTClient`.
+operasi domain berbasis device/uid), dan `app.Client` (facade berbasis ownerID yang memegang
+ownership guard). Cara termudah: pakai `app.Client`.
 
 ```go
 // postgres.WithAutoMigrate() opsional — jalankan migration saat startup
 store, err := postgres.NewAccountStore(ctx, pool, postgres.WithAutoMigrate())
-if err != nil {
-    log.Fatal(err)
-}
 
-// baseURL = endpoint region: tuyaus / tuyaeu / tuyacn / tuyain
-// httpClient opsional via tuya.WithHTTPClient(...); default http.DefaultClient
 client, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com")
-// client, err := tuya.New(accessID, accessSecret, baseURL, tuya.WithHTTPClient(hc))
 iot := tuya.NewIoTClient(client)
+appClient := app.New(iot, store) // postgres.Store satisfies app.AccountStore
 
-// resolve owner → uid sendiri (concern consumer), baru panggil IoT
-acc, err := store.Get(ctx, ownerID)
-if errors.Is(err, postgres.ErrAccountNotLinked) {
-    // arahkan human ke linking flow
-}
-
-devices, err := iot.ListDevices(ctx, acc.TuyaUID)
-status, err := iot.DeviceStatus(ctx, acc.TuyaUID, deviceID)
-err = iot.SendCommands(ctx, acc.TuyaUID, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
+// Semua resolve owner→uid + ownership guard ditangani app.Client
+devices, err := appClient.ListDevices(ctx, ownerID)
+status, err := appClient.DeviceStatus(ctx, ownerID, deviceID)
+err = appClient.SendCommands(ctx, ownerID, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
-`ownerID` adalah identitas opaque milik consumer; consumer memetakannya ke Tuya UID lewat
-`postgres.Store` (atau store backend lain miliknya) sebelum memanggil `IoT`.
+`IoTClient` bisa dipakai langsung jika consumer sudah pegang tuyaUID dan tidak butuh ownership
+guard (trusted context). `DeviceStatus`/`SendCommands` device-addressed — tidak butuh uid.
+
+```go
+acc, err := store.Get(ctx, ownerID)
+devices, err := iot.ListDevices(ctx, acc.TuyaUID) // uid-addressed
+status, err := iot.DeviceStatus(ctx, deviceID)    // device-addressed, tanpa ownership guard
+```
 
 ## Region
 
@@ -80,19 +82,27 @@ Jangan pernah edit migration yang sudah di-commit.
 
 - **Token app-level di-cache in-memory, tanpa store.** Kredensial Tuya bersifat project-wide, bukan
   per-user. `Client` me-refresh sendiri saat expiry / saat Tuya balas code 1010. Tidak perlu token store.
-- **Ownership check via list-then-contains** (`assertDeviceOwned`, device.go). Tiap `SendCommands`/`DeviceStatus`
-  melisting device akun lalu cek keanggotaan. Aman & sederhana untuk traffic rendah; caching ditunda
-  sampai ada kebutuhan throughput nyata.
-- **Operasi domain diorganisir per-file, assert terlokalisasi.** Method `IoTClient` ditulis di file
-  domainnya (device.go; nanti home.go, space.go), masing-masing membawa assert kepemilikannya sendiri
-  (`assertDeviceOwned`, dst). Struct `IoTClient` + `NewIoTClient` hidup di `client.go`, di samping transport.
-- **Tiga concern dipisah, tanpa interface AccountStore.** `Client` transport, `IoTClient` facade domain
-  berbasis `tuyaUID`, account management seluruhnya di `postgres` (tanpa interface karena tak dikonsumsi
-  paket `tuya`). `Store` memiliki siklus hidup mapping penuh — `Get` (baca), `Link` (upsert), `Unlink`
-  (soft-delete); consumer me-link akun sekali lalu me-resolve owner→uid via `Get` sebelum panggil `IoTClient`.
-- **`Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Jaminan ownership
-  adalah properti method `IoTClient` (`DeviceStatus`/`SendCommands`), bukan properti `Client` — `Do`
-  melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis. agent) adalah tanggung jawab consumer.
+- **Ownership guard hidup di `app.Client`, bukan `IoTClient`.** `IoTClient` adalah trusted,
+  device-addressed layer tanpa tenant check — caller yang memegangnya bisa mengakses device
+  manapun dalam project. `app.Client` adalah pintu tunggal untuk agent: setiap call melaluinya
+  harus resolve owner lebih dulu, dan ownership diverifikasi via `HasDevice` (lean, tanpa enrichment)
+  sebelum command diteruskan. Guard ini *lebih kuat* di `app`: tidak bisa di-bypass tanpa melewati
+  `app.Client`.
+- **Ownership check via list-then-contains** (`app.assertOwned` → `IoTClient.HasDevice`). Tiap
+  `SendCommands`/`DeviceStatus` melisting device akun (raw, tanpa enrichment) lalu cek keanggotaan.
+  Aman & sederhana untuk traffic rendah; caching ditunda sampai ada kebutuhan throughput nyata.
+- **Operasi domain diorganisir per-file di `IoTClient`.** Method `IoTClient` ditulis di file
+  domainnya (device.go; nanti home.go, space.go). Struct `IoTClient` + `NewIoTClient` hidup di
+  `client.go`, di samping transport.
+- **`ErrDeviceNotOwned` dan `ErrAccountNotLinked` hidup di `app`.** Keduanya adalah konsep
+  multi-tenant / owner-scoping, bukan konsep Tuya API — tempatnya di layer yang memiliki owner.
+- **Empat concern dipisah dengan jelas.** `Client` transport; `IoTClient` device-addressed Tuya
+  facade; `app.Client` owner-scoped facade dengan ownership guard; `postgres.Store` account mapping.
+  `AccountStore` interface didefinisikan di `app` (consumer), bukan di `postgres` (implementor) —
+  sesuai idiom Go "accept interfaces, return structs".
+- **`Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Tidak ada
+  ownership guard di sini — `Do` melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis.
+  agent) adalah tanggung jawab consumer.
 
 ## Slop History
 
@@ -121,6 +131,12 @@ Temuan AI yang sudah dibantah — jangan ulangi.
   `errgroup.WithContext` mengubah semantik ke *fail-fast*: goroutine pertama yang error membatalkan sisanya.
   `enrichDevices` justru ingin *collect-all*: semua channel name diambil, semua error dikumpulkan, baru
   dikembalikan sekaligus. Menggantinya dengan errgroup merusak semantik yang diinginkan.
+
+- **"Ownership guard ada di `IoTClient`" — sudah tidak benar sejak refactor Juni 2026.**
+  `IoTClient.DeviceStatus`/`SendCommands` sekarang device-addressed murni, tanpa `tuyaUID`
+  dan tanpa ownership check. Guard pindah ke `app.Client.assertOwned`. `IoTClient` adalah
+  trusted layer — siapapun yang memegangnya bisa mengakses device apapun dalam project.
+  Jangan flag ini sebagai kelemahan; itu keputusan sadar. Audit ownership → lihat `app/client.go`.
 
 - **`context.Background()` di `New()` bukan masalah.** `New()` menerima `WithHTTPClient(hc)` — caller
   yang butuh kontrol timeout/cancellation mengonfigurasinya di `*http.Client`. Itu mekanisme yang tepat
