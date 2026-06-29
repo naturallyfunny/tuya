@@ -24,7 +24,6 @@ var migrationFiles embed.FS
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Store maps an owner ID to the human's Tuya account UID, backed by PostgreSQL.
@@ -73,15 +72,21 @@ func NewAccountStore(ctx context.Context, db Querier, opts ...Option) (*Store, e
 // Get returns the full Account linked to ownerID, or tuya.ErrAccountNotLinked if
 // none is linked.
 func (s *Store) Get(ctx context.Context, ownerID string) (tuya.Account, error) {
-	var acc tuya.Account
-	err := s.db.QueryRow(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT owner_id, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner_id = $1 AND deleted_at IS NULL`,
 		ownerID,
-	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return tuya.Account{}, tuya.ErrAccountNotLinked
-		}
+		return tuya.Account{}, fmt.Errorf("get account: %w", err)
+	}
+	acc, err := pgx.CollectOneRow(rows, func(row pgx.CollectableRow) (tuya.Account, error) {
+		var a tuya.Account
+		return a, row.Scan(&a.OwnerID, &a.TuyaUID, &a.CreatedAt, &a.UpdatedAt)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tuya.Account{}, tuya.ErrAccountNotLinked
+	}
+	if err != nil {
 		return tuya.Account{}, fmt.Errorf("get account: %w", err)
 	}
 	return acc, nil
@@ -92,15 +97,21 @@ func (s *Store) Get(ctx context.Context, ownerID string) (tuya.Account, error) {
 // updated_at, and re-linking a previously unlinked owner revives the row
 // (clearing deleted_at) rather than failing on the primary key.
 func (s *Store) Link(ctx context.Context, ownerID, tuyaUID string) (tuya.Account, error) {
-	var acc tuya.Account
-	err := s.db.QueryRow(ctx,
+	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_app_accounts (owner_id, tuya_uid)
 		 VALUES ($1, $2)
 		 ON CONFLICT (owner_id) DO UPDATE
 		   SET tuya_uid = EXCLUDED.tuya_uid, updated_at = NOW(), deleted_at = NULL
 		 RETURNING owner_id, tuya_uid, created_at, updated_at`,
 		ownerID, tuyaUID,
-	).Scan(&acc.OwnerID, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt)
+	)
+	if err != nil {
+		return tuya.Account{}, fmt.Errorf("link account: %w", err)
+	}
+	acc, err := pgx.CollectOneRow(rows, func(row pgx.CollectableRow) (tuya.Account, error) {
+		var a tuya.Account
+		return a, row.Scan(&a.OwnerID, &a.TuyaUID, &a.CreatedAt, &a.UpdatedAt)
+	})
 	if err != nil {
 		return tuya.Account{}, fmt.Errorf("link account: %w", err)
 	}
@@ -147,10 +158,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		if entry.IsDir() || !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		var applied bool
-		if err := s.db.QueryRow(ctx,
+		rows, err := s.db.Query(ctx,
 			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, name,
-		).Scan(&applied); err != nil {
+		)
+		if err != nil {
+			return fmt.Errorf("postgres: check migration %s: %w", name, err)
+		}
+		applied, err := pgx.CollectOneRow(rows, pgx.RowTo[bool])
+		if err != nil {
 			return fmt.Errorf("postgres: check migration %s: %w", name, err)
 		}
 		if applied {
