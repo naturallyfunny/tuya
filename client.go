@@ -1,11 +1,12 @@
 // Package tuya is the owner-scoped door of the library: callers drive Tuya
-// devices by their own opaque owner ID instead of a Tuya UID. It is the surface
+// devices by their own opaque owner key instead of a Tuya UID. It is the surface
 // an AI agent goes through — low traffic, one action per user intent (list
 // devices, read a device's state, send it a command).
 //
 // The owner concept is foreign to Tuya. The cloud subpackage speaks the Tuya
-// Cloud OpenAPI and is keyed by Tuya UID; an owner ID is the consumer's
-// app-domain identity. This package quarantines that foreign concept, including
+// Cloud OpenAPI and is keyed by Tuya UID; an owner is whatever opaque string the
+// consumer identifies a human by (a user ID, an email — the library does not
+// care). This package quarantines that foreign concept, including
 // the ownership guard: cloud.IoT is a trusted, device-addressed layer with
 // no tenant check; Client is the single door an untrusted agent goes through, and
 // it cannot be opened without resolving an owner first. Mapping owner -> Tuya UID
@@ -24,18 +25,18 @@ import (
 	"go.naturallyfunny.dev/tuya/cloud"
 )
 
-// Account links an opaque owner ID (whatever the consumer uses to identify a
+// Account links an opaque owner (whatever the consumer uses to identify a
 // human) to that human's Tuya account UID. Devices are listed and controlled
 // under the UID.
 type Account struct {
-	OwnerID   string    `json:"owner_id"`
+	Owner     string    `json:"owner"`
 	TuyaUID   string    `json:"tuya_uid"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ErrAccountNotLinked indicates the owner has no Tuya account linked, i.e. there
-// is no owner-ID -> Tuya-UID mapping. Stores return it when no mapping exists and
+// is no owner -> Tuya-UID mapping. Stores return it when no mapping exists and
 // Client surfaces it, so consumers can route the human into the linking flow.
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
@@ -48,9 +49,9 @@ var ErrDeviceNotOwned = errors.New("tuya: device does not belong to owner")
 // Link creates or refreshes it, and Unlink removes it. postgres.Store satisfies
 // this interface implicitly; consumers may supply any backend.
 type AccountStore interface {
-	Get(ctx context.Context, ownerID string) (Account, error)
-	Link(ctx context.Context, ownerID, tuyaUID string) (Account, error)
-	Unlink(ctx context.Context, ownerID string) error
+	Get(ctx context.Context, owner string) (Account, error)
+	Link(ctx context.Context, owner, tuyaUID string) (Account, error)
+	Unlink(ctx context.Context, owner string) error
 }
 
 // IoT is the device-addressed Tuya facade this package drives, narrowed to the
@@ -81,16 +82,16 @@ func New(iot IoT, store AccountStore) *Client {
 }
 
 // Account returns the linked Tuya account for the owner. Useful for surfaces
-// that need to surface the owner-ID / Tuya-UID mapping (e.g. a get_account tool).
-func (c *Client) Account(ctx context.Context, ownerID string) (Account, error) {
-	return c.store.Get(ctx, ownerID)
+// that need to surface the owner / Tuya-UID mapping (e.g. a get_account tool).
+func (c *Client) Account(ctx context.Context, owner string) (Account, error) {
+	return c.store.Get(ctx, owner)
 }
 
 // ListDevices resolves the owner then lists their devices, each with its current
 // status. Returns ErrAccountNotLinked (from the store) if the owner has no linked
 // account.
-func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]cloud.Device, error) {
-	acc, err := c.store.Get(ctx, ownerID)
+func (c *Client) ListDevices(ctx context.Context, owner string) ([]cloud.Device, error) {
+	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +101,8 @@ func (c *Client) ListDevices(ctx context.Context, ownerID string) ([]cloud.Devic
 // DeviceStatus resolves the owner, asserts the device belongs to them, then
 // reads one device's status. Returns ErrAccountNotLinked if the owner has no
 // linked account, or ErrDeviceNotOwned if the device isn't on the resolved account.
-func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]cloud.DataPoint, error) {
-	acc, err := c.store.Get(ctx, ownerID)
+func (c *Client) DeviceStatus(ctx context.Context, owner, deviceID string) ([]cloud.DataPoint, error) {
+	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -114,8 +115,8 @@ func (c *Client) DeviceStatus(ctx context.Context, ownerID, deviceID string) ([]
 // SendCommands resolves the owner, asserts the device belongs to them, then sends
 // DP commands to it. Returns ErrAccountNotLinked if the owner has no linked
 // account, or ErrDeviceNotOwned if the device isn't on the resolved account.
-func (c *Client) SendCommands(ctx context.Context, ownerID, deviceID string, cmds []cloud.DataPoint) error {
-	acc, err := c.store.Get(ctx, ownerID)
+func (c *Client) SendCommands(ctx context.Context, owner, deviceID string, cmds []cloud.DataPoint) error {
+	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return err
 	}

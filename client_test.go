@@ -18,8 +18,8 @@ type fakeStore struct {
 	gotOwner string
 }
 
-func (f *fakeStore) Get(_ context.Context, ownerID string) (tuya.Account, error) {
-	f.gotOwner = ownerID
+func (f *fakeStore) Get(_ context.Context, owner string) (tuya.Account, error) {
+	f.gotOwner = owner
 	return f.acc, f.err
 }
 
@@ -73,7 +73,7 @@ func (f *fakeIoT) HasDevice(_ context.Context, tuyaUID, _ string) (bool, error) 
 }
 
 func linkedAccount() tuya.Account {
-	return tuya.Account{OwnerID: "owner-1", TuyaUID: "uid-1"}
+	return tuya.Account{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
 func TestListDevices(t *testing.T) {
