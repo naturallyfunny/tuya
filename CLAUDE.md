@@ -35,9 +35,14 @@ cloud/         Package cloud — layer Tuya murni (keyed by Tuya UID, tanpa kons
                tuya.Client.assertOwned), enrichDevices (channel-name multi-gang kategori
                kg/cz*). Domain baru → file baru (home.go, space.go).
 postgres/
-  store.go     Account management (owner_id -> tuya_uid): Store.Get/Link/Unlink, migrate.
+  store.go     Account management (owner -> tuya_uid): Store.Get/Link/Unlink, migrate.
                Mengembalikan tuya.Account / tuya.ErrAccountNotLinked (import root tuya).
   migrations/  SQL files, di-embed via //go:embed (tabel tuya_app_accounts, soft-delete deleted_at)
+firestore/
+  store.go     Account management yang sama di atas Cloud Firestore: NewAccountStore(client,
+               opts) — satu dokumen per owner (doc ID = owner, koleksi tuya_app_accounts,
+               override via WithCollection), soft-delete deleted_at, Link/Unlink transactional,
+               timestamp client-side agar Link bisa return Account tanpa re-read. Tanpa migrasi.
 ```
 
 Dependency direction acyclic: **postgres → tuya → cloud**.
@@ -45,7 +50,7 @@ Dependency direction acyclic: **postgres → tuya → cloud**.
 ## Cara Pakai
 
 Tiga tier yang dirangkai consumer: `cloud.Client` (transport), `cloud.IoT` (facade
-operasi domain berbasis device/uid), dan `tuya.Client` (root, facade berbasis ownerID yang
+operasi domain berbasis device/uid), dan `tuya.Client` (root, facade berbasis owner yang
 memegang ownership guard). Default & cara termudah untuk agent: pakai `tuya.Client`.
 
 ```go
@@ -57,16 +62,16 @@ iot := cloud.NewIoT(transport)
 client := tuya.New(iot, store) // postgres.Store satisfies tuya.AccountStore
 
 // Semua resolve owner→uid + ownership guard ditangani tuya.Client
-devices, err := client.ListDevices(ctx, ownerID)
-status, err := client.DeviceStatus(ctx, ownerID, deviceID)
-err = client.SendCommands(ctx, ownerID, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
+devices, err := client.ListDevices(ctx, owner)
+status, err := client.DeviceStatus(ctx, owner, deviceID)
+err = client.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
 `cloud.IoT` bisa dipakai langsung jika consumer sudah pegang tuyaUID dan tidak butuh
 ownership guard (trusted context). `DeviceStatus`/`SendCommands` device-addressed — tidak butuh uid.
 
 ```go
-acc, err := store.Get(ctx, ownerID)
+acc, err := store.Get(ctx, owner)
 devices, err := iot.ListDevices(ctx, acc.TuyaUID) // uid-addressed
 status, err := iot.DeviceStatus(ctx, deviceID)    // device-addressed, tanpa ownership guard
 ```

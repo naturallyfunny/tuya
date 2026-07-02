@@ -35,13 +35,17 @@ concept). The root composes over it:
   act on any device the project can reach; ownership is `tuya.Client`'s job. It satisfies the
   consumer-side `tuya.IoT` interface.
 
-The PostgreSQL adapter for the owner → UID mapping:
+Two ready-made adapters for the owner → UID mapping — pick one, or implement
+`tuya.AccountStore` yourself:
 
 - **`postgres.Store`** — implements `tuya.AccountStore` (implicitly), backing the owner → UID
-  mapping with PostgreSQL. A consumer links an account once, then drives devices by owner ID
+  mapping with PostgreSQL. A consumer links an account once, then drives devices by owner
   via `tuya.Client`.
+- **`firestore.Store`** — the same contract and lifecycle (upsert `Link`, soft-delete
+  `Unlink`) backed by Cloud Firestore: one document per owner, keyed by the owner string.
 
-Dependency direction is acyclic: **`postgres → tuya → cloud`**.
+Dependency direction is acyclic: **`postgres → tuya → cloud`** (`firestore` sits in the same
+slot as `postgres`).
 
 Three consumer tiers fall out of this layout — bind the one you need:
 
@@ -59,6 +63,17 @@ store, err := postgres.NewAccountStore(ctx, pool, postgres.WithAutoMigrate())
 if err != nil {
     log.Fatal(err)
 }
+
+// Or back the mapping with Cloud Firestore instead (alias one of the two
+// firestore imports; there is nothing to migrate):
+//
+//	import (
+//	    gcfs "cloud.google.com/go/firestore"
+//	    "go.naturallyfunny.dev/tuya/firestore"
+//	)
+//
+//	fs, err := gcfs.NewClient(ctx, projectID)
+//	store := firestore.NewAccountStore(fs)
 
 // baseURL selects the regional endpoint; WithHTTPClient is optional.
 transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
@@ -78,12 +93,12 @@ bad credential or unreachable region fails here at wiring time, not on the first
 Drive devices by owner ID with `tuya.Client` — it resolves owner → UID and enforces ownership:
 
 ```go
-devices, err := client.ListDevices(ctx, ownerID)      // typed devices + per-channel names
+devices, err := client.ListDevices(ctx, owner)      // typed devices + per-channel names
 if errors.Is(err, tuya.ErrAccountNotLinked) {
     // route the human into the account-linking flow
 }
-status, err := client.DeviceStatus(ctx, ownerID, id)  // asserts ownership, then reads status
-err = client.SendCommands(ctx, ownerID, id, []cloud.DataPoint{
+status, err := client.DeviceStatus(ctx, owner, id)  // asserts ownership, then reads status
+err = client.SendCommands(ctx, owner, id, []cloud.DataPoint{
     {Code: "switch_1", Value: true},                  // asserts ownership, then sends
 })
 if errors.Is(err, tuya.ErrDeviceNotOwned) {
@@ -95,13 +110,13 @@ if errors.Is(err, tuya.ErrDeviceNotOwned) {
 owner-ID / Tuya-UID mapping):
 
 ```go
-acc, err := client.Account(ctx, ownerID)
+acc, err := client.Account(ctx, owner)
 ```
 
 Need raw cloud access? `cloud.IoT` is trusted and device-addressed — no ownership guard:
 
 ```go
-acc, err := store.Get(ctx, ownerID)
+acc, err := store.Get(ctx, owner)
 devices, err := iot.ListDevices(ctx, acc.TuyaUID)   // uid-addressed
 status, err := iot.DeviceStatus(ctx, deviceID)       // device-addressed, no guard
 ```
@@ -112,12 +127,14 @@ agent); route everything through `tuya.Client` instead.
 
 ## Linking accounts
 
-`postgres.Store` owns the full lifecycle of the owner → Tuya-UID mapping: `Get` reads it,
-`Link` creates or refreshes it (upsert; reviving a soft-deleted row), and `Unlink`
-soft-deletes it. The table is `tuya_app_accounts` (`owner_id` PK, `tuya_uid`, timestamps,
-soft-delete `deleted_at`).
+Both stores own the full lifecycle of the owner → Tuya-UID mapping: `Get` reads it,
+`Link` creates or refreshes it (upsert; reviving a soft-deleted entry), and `Unlink`
+soft-deletes it. In PostgreSQL that is the `tuya_app_accounts` table (`owner` PK,
+`tuya_uid`, timestamps, soft-delete `deleted_at`); in Firestore it is the
+`tuya_app_accounts` collection (override with `firestore.WithCollection`), one document
+per owner with the same fields.
 
 ```go
-acc, err := store.Link(ctx, ownerID, tuyaUID)   // upsert the mapping
-err = store.Unlink(ctx, ownerID)                // soft-delete it
+acc, err := store.Link(ctx, owner, tuyaUID)   // upsert the mapping
+err = store.Unlink(ctx, owner)                // soft-delete it
 ```
