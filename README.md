@@ -20,13 +20,29 @@ err = client.SendCommands(ctx, owner, id, []cloud.DataPoint{   // ownership asse
 })
 ```
 
+## Contents
+
+- [Install](#install)
+- [Why this shape](#why-this-shape)
+- [Concepts](#concepts)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Linking accounts](#linking-accounts)
+- [Design rationale](#design-rationale)
+- [Non-goals](#non-goals)
+- [Testing](#testing)
+- [Compatibility](#compatibility)
+- [Layout](#layout)
+- [Status & roadmap](#status--roadmap)
+- [License](#license)
+
 ## Install
 
 ```sh
 go get go.naturallyfunny.dev/tuya
 ```
 
-Requires Go 1.25+ (the library uses `sync.WaitGroup.Go`).
+Requires Go 1.25+ (see [Compatibility](#compatibility)).
 
 ## Why this shape
 
@@ -233,15 +249,68 @@ Each one is a domain or usage constraint, not an oversight.
   error. A caller that needs to bound it configures timeouts on the `*http.Client` via
   `WithHTTPClient` — the right lever for transport-level control.
 
-## Testing
+- **The Firestore store writes timestamps client-side, not with `ServerTimestamp` sentinels.**
+  `Link` returns the exact `Account` it just stored. A `ServerTimestamp` sentinel's value is
+  unknown until *after* the commit resolves, which would force a second read to learn what was
+  written. Stamping `time.Now().UTC()` inside the transaction lets `Link` return the stored
+  `Account` from the one round trip it already makes. The trade-off is trusting the client
+  clock for `created_at` / `updated_at` — acceptable for an audit timestamp on a low-frequency
+  linking action, not for a monotonic event log. (The PostgreSQL store has no such tension: its
+  `RETURNING` clause hands back the server-set `NOW()` in the same statement.)
 
-`tuya.Client` is unit-tested against fake `IoT` and `AccountStore` implementations — happy
-paths plus `ErrAccountNotLinked` / `ErrDeviceNotOwned` and the short-circuit guards. The
-Firestore owner-ID validation is table-tested.
+- **The opaque owner is validated as a Firestore document ID, up front.**
+  The owner string is used *verbatim* as the document ID — no hashing, no escaping — so a lookup
+  is a direct read, not a query. That subjects the owner to Firestore's document-ID rules
+  (non-empty, no `/`, not `.` or `..`, ≤1500 bytes, not the reserved `__*__` pattern), so
+  `validateOwner` rejects a violating owner loudly at the call site rather than letting it
+  corrupt a document path or fail server-side with an opaque error. It is the one piece of store
+  logic that is pure and [table-tested](#testing).
+
+## Non-goals
+
+To keep the surface honest, the library deliberately does **not**:
+
+- **Run the Tuya account-authorization flow.** It maps an *already-authorized* Tuya UID to your
+  owner; obtaining that UID — the human granting your Tuya project access to their account —
+  happens upstream in your onboarding. The library's world begins once you can call
+  `store.Link(owner, tuyaUID)`.
+- **Wrap the whole Tuya Cloud OpenAPI.** Only the device operations an agent needs are typed
+  (`ListDevices`, `DeviceStatus`, `SendCommands`). `cloud.Client.Do` is the raw escape hatch for
+  everything else — deliberately unguarded, and not something to hand an agent.
+- **Optimize for throughput.** Ownership is re-checked per call by listing devices, and the token
+  lives in memory. Both are right for sporadic, one-intent-at-a-time agent traffic and would only
+  be rebuilt (caching, invalidation) if a real throughput need appeared. See
+  [Design rationale](#design-rationale).
+- **Verify trust for `cloud.IoT`.** That layer is device-addressed with no tenant check by design;
+  deciding who may hold it is the consumer's job.
+
+## Testing
 
 ```sh
 go test ./...
 ```
+
+The root `tuya` package — the ownership boundary, where a bug means a device reaches the wrong
+owner — is unit-tested against fake `IoT` and `AccountStore` implementations: happy paths,
+`ErrAccountNotLinked` / `ErrDeviceNotOwned`, and the short-circuit guards (a command must never
+reach an unowned device). That suite covers **95.8%** of the package's statements. The Firestore
+`validateOwner` rules are table-tested (100% of that function).
+
+The rest is integration-shaped by nature: `cloud` signs and calls the live Tuya API, and the
+`postgres` / `firestore` stores talk to a real database (or the Firestore emulator). They carry
+no unit tests — mocking an HTTP round trip or a Firestore transaction would exercise the mock,
+not the behaviour — so their reported statement coverage is honestly low. Wiring them to live
+infrastructure behind a build tag is on the [roadmap](#status--roadmap).
+
+## Compatibility
+
+- **Go 1.25+**, per `go.mod`. The concurrent enrichment in `enrichDevices` uses
+  `sync.WaitGroup.Go`, added in Go 1.25.
+- **The dependency cost is opt-in.** The root `tuya` package and the `cloud` layer import
+  **only the standard library** — bind those, bring your own `AccountStore`, and you add nothing
+  to your module graph. The external dependencies (`jackc/pgx` for `postgres`;
+  `cloud.google.com/go/firestore` and gRPC for `firestore`) are compiled only if you import that
+  store subpackage.
 
 ## Layout
 
@@ -258,6 +327,19 @@ postgres/
 firestore/
   store.go       AccountStore on Cloud Firestore (schemaless, no migrations).
 ```
+
+## Status & roadmap
+
+The public API above is stable and in use — the owner-scoped door, the `cloud` split, and both
+stores. Remaining work is additive:
+
+- [x] MIT `LICENSE`.
+- [x] Unit tests on the ownership boundary (root package, 95.8%) and Firestore owner validation.
+- [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
+- [ ] Further Tuya domains beyond device control (`cloud/home.go`, `cloud/space.go`), added as
+      new files on `cloud.IoT`.
+- [ ] Ownership-check caching — deferred until a real throughput need justifies the invalidation
+      cost.
 
 ## License
 
