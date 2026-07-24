@@ -3,14 +3,15 @@
 Module Go `go.naturallyfunny.dev/tuya` — reusable public library untuk integrasi Tuya Cloud OpenAPI.
 Dirancang interface-based agar dapat dipakai lintas project, tidak terikat ke satu database atau satu aplikasi.
 
-## Tujuan Pemakaian (baca sebelum audit)
+## Tujuan Pemakaian
 
 Library ini dipakai sebagai **tool yang dipanggil oleh AI agent**, bukan backend high-throughput.
 Pola traffic-nya: panggilan sporadik, satu aksi per intent user (list device, baca status, kirim command),
-volume rendah. **Saat mengaudit, jangan menilai repo ini dengan standar service high-throughput** — beberapa
-"kelemahan" adalah keputusan sadar. Baca "Design Decisions" dan "Slop History" sebelum melaporkan temuan;
-sebelum menyarankan idiom generik ("prefer X"), cek apakah ia mengubah semantik atau bertabrakan dengan
-kendala domain (signing wajib hash full-body, retry me-replay body, collect-all error).
+volume rendah. Beberapa keputusan (ownership check via list-then-contains, token in-memory, collect-all
+error) mengoptimalkan untuk pola ini, bukan untuk throughput tinggi — rasionalnya ada di "Design Decisions"
+dan di README (section "Design rationale"). Sebelum menukar sebuah keputusan dengan idiom generik ("prefer X"),
+cek dulu apakah ia mengubah semantik atau bertabrakan dengan kendala domain (signing wajib hash full-body,
+retry me-replay body, collect-all error).
 
 ## Struktur
 
@@ -88,7 +89,9 @@ Hanya `.up.sql` yang dieksekusi; `.down.sql` disimpan untuk rollback manual.
 Version tracking via tabel `tuya_schema_migrations`. Semua statement wajib `IF NOT EXISTS` / `IF EXISTS`.
 Jangan pernah edit migration yang sudah di-commit.
 
-## Design Decisions (sengaja — bukan temuan audit)
+## Design Decisions
+
+(Rasional publik yang lebih lengkap ada di README, section "Design rationale".)
 
 - **Token app-level di-cache in-memory, tanpa store.** Kredensial Tuya bersifat project-wide, bukan
   per-user. `cloud.Client` me-refresh sendiri saat expiry / saat Tuya balas code 1010. Tidak perlu token store.
@@ -120,45 +123,21 @@ Jangan pernah edit migration yang sudah di-commit.
   ownership guard di sini — `Do` melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis.
   agent) adalah tanggung jawab consumer.
 
-## Slop History
+## Design Notes (catatan yang mudah salah baca)
 
-Temuan AI yang sudah dibantah — jangan ulangi.
+Beberapa keputusan sengaja melawan idiom generik. Rasional lengkap ada di README ("Design rationale");
+di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README.
 
-- **`Do(ctx, method, path, body []byte)` bukan anti-pattern.** Pedoman "prefer io.Reader" tidak berlaku
-  di sini karena dua constraint domain yang tidak bisa dinegosiasi: (1) signing Tuya wajib `SHA256(body)`
-  sebelum request dikirim — body harus ter-materialisasi penuh; (2) retry-on-1010 wajib me-replay body
-  ke attempt kedua — `io.Reader` sekali-pakai tidak bisa di-replay tanpa buffer ke `[]byte` toh.
-  Mengubah ke `io.Reader` hanya memindahkan `io.ReadAll` ke dalam `Do`, plus API berbohong soal streaming.
-  Caller pun sudah pegang `[]byte` (dari `json.Marshal`). `[]byte` adalah pilihan yang benar.
-
-- **`cloud` tidak mengekspor interface untuk `IoT` — itu benar, bukan kelalaian.** Idiom Go:
-  "accept interfaces, return structs." `cloud.NewIoT` mengembalikan `*cloud.IoT` (concrete).
-  Yang mendefinisikan interface adalah *consumer*: root `tuya` mendeklarasikan `tuya.IoT` sesempit
-  kebutuhan `tuya.Client` (di-satisfy `*cloud.IoT`) — ini justru penerapan idiom yang sama, bukan
-  pelanggaran. Jangan minta `cloud` mengekspor interface spekulatif: itu menanggung beban kompatibilitas
-  seumur hidup dan melebar tiap domain baru (home.go, space.go). Mocking adalah concern consumer.
-
-- **`enrichDevices` pakai `sync.Mutex` + `errors.Join`, bukan `errgroup` — disengaja.** Semantiknya
-  **collect-all**: agent ingin tahu SEMUA device yang gagal enrich dalam satu panggilan. `errgroup.WithContext`
-  itu **fail-fast** (membatalkan sibling saat error pertama) — kontrak berbeda. "Context propagation gratis"
-  yang sering disebut = pembatalan-saat-error-pertama = justru menghilangkan error device lain. Pindah ke
-  errgroup hanya tepat jika fail-fast memang diinginkan; saat ini itu regresi perilaku, bukan cleanup.
-  (Catatan: `wg.Go` di kode ini adalah `sync.WaitGroup.Go` dari Go 1.25, BUKAN errgroup.)
-
-- **`enrichDevices` pakai `sync.WaitGroup.Go` + `errors.Join`, bukan `errgroup.WithContext` — itu benar.**
-  `errgroup.WithContext` mengubah semantik ke *fail-fast*: goroutine pertama yang error membatalkan sisanya.
-  `enrichDevices` justru ingin *collect-all*: semua channel name diambil, semua error dikumpulkan, baru
-  dikembalikan sekaligus. Menggantinya dengan errgroup merusak semantik yang diinginkan.
-
-- **"Ownership guard ada di `IoT`" — sudah tidak benar sejak refactor Juni 2026.**
-  `cloud.IoT.DeviceStatus`/`SendCommands` sekarang device-addressed murni, tanpa `tuyaUID`
-  dan tanpa ownership check. Guard pindah ke `tuya.Client.assertOwned` (root). `cloud.IoT`
-  adalah trusted layer — siapapun yang memegangnya bisa mengakses device apapun dalam project.
-  Jangan flag ini sebagai kelemahan; itu keputusan sadar. Audit ownership → lihat root `client.go`.
-
-- **`context.Background()` di `cloud.New()` bukan masalah.** `cloud.New()` menerima `WithHTTPClient(hc)` —
-  caller yang butuh kontrol timeout/cancellation mengonfigurasinya di `*http.Client`. Itu mekanisme yang
-  tepat untuk prefetch saat konstruksi.
+- **`Do(...body []byte)` bukan `io.Reader`** — signing wajib `SHA256(body)` sebelum kirim, dan retry-on-1010
+  me-replay body; `io.Reader` sekali-pakai tidak bisa di-replay. `[]byte` adalah tipe yang jujur di sini.
+- **`cloud` mengekspor concrete, consumer yang mendeklarasikan interface** (`tuya.IoT`) — "accept interfaces,
+  return structs". Mocking adalah concern consumer; `cloud` tidak menanggung interface spekulatif.
+- **`enrichDevices` pakai `sync.WaitGroup.Go` + `errors.Join`, bukan `errgroup`** — semantiknya collect-all
+  (kumpulkan semua error device), sedang `errgroup.WithContext` fail-fast (batalkan saat error pertama).
+  Kontrak berbeda; errgroup di sini adalah perubahan perilaku, bukan cleanup.
+- **Sejarah: ownership guard sudah pindah ke root sejak refactor Juni 2026.** `cloud.IoT.DeviceStatus`/
+  `SendCommands` kini device-addressed murni tanpa `tuyaUID` dan tanpa ownership check; guard hidup di
+  `tuya.Client.assertOwned`. Kalau menelusuri ownership, mulai dari root `client.go`, bukan `cloud`.
 
 ## Conventions
 
