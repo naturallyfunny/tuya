@@ -28,7 +28,7 @@ type Channel struct {
 // from a separate endpoint (DeviceChannelNames), and deciding which devices are
 // worth that extra request is a judgement about Tuya's catalogue that this layer
 // does not make. It is left nil for callers that compose the two — see
-// tuya.Client.ListDevices.
+// tuya.AppAccountClient.ListDevices.
 type Device struct {
 	ID              string      `json:"id"`
 	Category        string      `json:"category"`
@@ -54,7 +54,7 @@ func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error)
 
 // DeviceStatus reads the current status (DPs) of a device. This layer is
 // trusted and device-addressed: the caller is responsible for verifying the
-// device belongs to whoever asked (see tuya.Client).
+// device belongs to whoever asked (see the root tuya package).
 func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
@@ -72,7 +72,7 @@ func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, e
 
 // SendCommands sends DP commands to a device. This layer is trusted and
 // device-addressed: the caller is responsible for verifying the device belongs
-// to whoever asked (see tuya.Client).
+// to whoever asked (see the root tuya package).
 func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID)
 	body, err := json.Marshal(struct {

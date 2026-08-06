@@ -1,6 +1,6 @@
 // Package postgres provides a PostgreSQL-backed account mapping for the Tuya
-// library: the owner → Tuya-UID link a consumer resolves (via tuya.Client)
-// before driving devices.
+// library: the owner → Tuya-UID link a consumer resolves (via
+// tuya.AppAccountClient) before driving devices.
 package postgres
 
 import (
@@ -30,7 +30,8 @@ type Querier interface {
 // It owns the full lifecycle of that mapping: Get reads it, Link creates or
 // refreshes it, and Unlink soft-deletes it. A consumer links an account once
 // (after the human authorizes Tuya), then drives devices by owner via
-// tuya.Client, which resolves owner -> UID with Get.
+// tuya.AppAccountClient, which resolves owner -> UID with Get. That is the
+// app-account tenancy model; Tuya's spatial model needs no such mapping.
 type Store struct {
 	db          Querier
 	autoMigrate bool

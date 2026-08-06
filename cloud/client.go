@@ -78,7 +78,7 @@ func WithHTTPClient(httpClient *http.Client) Option {
 // Every method here maps one-to-one onto a single Tuya endpoint. That is the
 // rule that keeps this layer honest: a method that cannot be pointed at one
 // endpoint is composing behaviour, and composition belongs to the caller that
-// wants it. So there is no ownership check here (that is tuya.Client's concept)
+// wants it. So there is no ownership check here (that is the root package's concept)
 // and no channel-name enrichment (that needs a judgement about which categories
 // are multi-gang, plus a fan-out policy). Both used to live here and were moved
 // out. Transport policy — token refresh, retry on code 1010 — is a different

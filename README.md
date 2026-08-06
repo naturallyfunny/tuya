@@ -54,26 +54,36 @@ out of that, and the library keeps them in separate layers so neither leaks into
 2. **Owning a device** — mapping *your* opaque owner ID to a human's Tuya UID and refusing
    any call that crosses accounts. This is the root `tuya` package.
 
-The payoff: the ownership guard lives at a single door (`tuya.Client`) that *cannot* be
-opened without first resolving an owner. The trusted, guard-free layer (`cloud.IoT`) still
-exists for code that legitimately holds a UID — but an agent never touches it.
+The payoff: the ownership guard lives at a single door (`tuya.AppAccountClient`) that
+*cannot* be opened without first resolving an owner. The trusted, guard-free layer
+(`cloud.IoT`) still exists for code that legitimately holds a UID — but an agent never
+touches it.
 
 ## Concepts
 
 Three composable tiers. Bind the one your caller needs:
 
-| You have / need                                          | Use            | Guarded? |
-| -------------------------------------------------------- | -------------- | -------- |
-| Just the transport (token lifecycle, signing, raw `Do`)  | `cloud.Client` | no       |
-| A Tuya UID, want typed device ops                        | `cloud.IoT`    | no       |
-| Your own owner ID, want ownership enforced               | `tuya.Client`  | **yes**  |
+| You have / need                                         | Use                     | Guarded? |
+| ------------------------------------------------------- | ----------------------- | -------- |
+| Just the transport (token lifecycle, signing, raw `Do`) | `cloud.Client`          | no       |
+| A Tuya UID, want typed device ops                       | `cloud.IoT`             | no       |
+| Your own owner ID, want ownership enforced              | `tuya.AppAccountClient` | **yes**  |
 
-- **`tuya.Client`** — the owner-scoped door. Resolves owner → Tuya UID through an
+- **`tuya.AppAccountClient`** — the owner-scoped door. Resolves owner → Tuya UID through an
   `AccountStore`, asserts the target device belongs to that account (a lean, unenriched
   listing plus a membership check), then delegates. It owns `Account`,
   `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AccountStore` / `IoT` interfaces it
   drives — including the ownership check itself, which is built here from plain `cloud`
   primitives rather than asked of `cloud`.
+
+  The name states a **tenancy model**, not verbosity. Tuya has two, and they differ in what
+  a tenant *is*. `AppAccountClient` is the app-account model: every human holds their own
+  Tuya app account, so the boundary is a Tuya UID and a store maps owner → UID. The second
+  is spatial — the boundary is a root space, devices live in the subtree beneath it, and
+  there is no per-tenant UID at all; it is the model Tuya recommends for multi-tenant
+  property (hotels, apartments). Its door will arrive as `SpaceClient` (see
+  [roadmap](#status--roadmap)), and at that point a bare `Client` would no longer say which
+  model you are holding.
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
@@ -81,7 +91,7 @@ Three composable tiers. Bind the one your caller needs:
 - **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `ListDevices`, `DeviceStatus`,
   `SendCommands`, `DeviceChannelNames`. One method per Tuya endpoint, so each call is one
   request and nothing is composed behind your back. No ownership guard; a holder can reach any
-  device the project can. Guarding it is `tuya.Client`'s job.
+  device the project can. Guarding it is the root package's job.
 
 Two ready-made `AccountStore` adapters ship in-tree — pick one, or implement the interface
 yourself:
@@ -124,8 +134,8 @@ if err != nil {
 }
 iot := cloud.NewIoT(transport)
 
-// 3. The owner-scoped door.
-client := tuya.New(iot, store) // postgres.Store satisfies tuya.AccountStore
+// 3. The owner-scoped door, for the app-account tenancy model.
+client := tuya.NewAppAccountClient(iot, store) // postgres.Store satisfies tuya.AccountStore
 ```
 
 `cloud.New` prefetches an access token, so a bad credential or unreachable region fails here,
@@ -181,7 +191,7 @@ channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels,
 ```
 
 > `cloud.IoT` and `cloud.Client.Do` carry **no** ownership guard by design. Don't hand them to
-> an untrusted caller (e.g. an agent) — route that traffic through `tuya.Client`.
+> an untrusted caller (e.g. an agent) — route that traffic through `tuya.AppAccountClient`.
 
 ## Linking accounts
 
@@ -219,7 +229,7 @@ Each one is a domain or usage constraint, not an oversight.
   would only move an `io.ReadAll` inside `Do` and advertise streaming that never happens.
   Callers already hold `[]byte` from `json.Marshal`.
 
-- **The ownership guard lives at the root (`tuya.Client`), not in `cloud.IoT`.**
+- **The ownership guard lives at the root (`tuya.AppAccountClient`), not in `cloud.IoT`.**
   `cloud.IoT` is a trusted, device-addressed layer with no tenant check — by design. Pushing
   the guard *up* to a single owner-scoped door makes it un-bypassable: you cannot reach a
   device without first resolving an owner. A guard buried in the device layer would have to
@@ -227,9 +237,9 @@ Each one is a domain or usage constraint, not an oversight.
 
 - **`cloud` exports concrete types; the *consumer* declares the interface.**
   `cloud.NewIoT` returns a concrete `*cloud.IoT`. The root package declares `tuya.IoT` as
-  narrowly as `tuya.Client` needs, and `*cloud.IoT` satisfies it structurally. This is
+  narrowly as its doors need, and `*cloud.IoT` satisfies it structurally. This is
   "accept interfaces, return structs" applied literally — mocking is the consumer's concern,
-  so `client_test.go` fakes `tuya.IoT` and `tuya.AccountStore` with zero test-only code in
+  so `app_account_test.go` fakes `tuya.IoT` and `tuya.AccountStore` with zero test-only code in
   `cloud`. Exporting a speculative interface from `cloud` would only add a
   compatibility burden that widens with every new domain.
 
@@ -258,7 +268,7 @@ Each one is a domain or usage constraint, not an oversight.
   need to justify the invalidation complexity.
 
   The listing comes from `cloud.IoT.ListDevices` — one request — and the membership loop lives
-  in `tuya.Client.assertOwned`. `cloud` deliberately exposes no `HasDevice`-style helper: a
+  in `tuya.AppAccountClient.assertOwned`. `cloud` deliberately exposes no `HasDevice`-style helper: a
   method whose reason to exist is a caller's guard would shape the lower layer around the upper
   one. `cloud` answers "what is on this UID"; what that *means* is the root package's word. The
   guard also never asks for channel labels — it needs identity, not names, and should not pay
@@ -271,7 +281,7 @@ Each one is a domain or usage constraint, not an oversight.
   the judgment that categories `kg` and `cz*` are the multi-gang ones — an opinion about Tuya's
   catalogue, not something its API states. What `cloud` offers instead is the primitive:
   `DeviceChannelNames` wraps `GET /v1.0/devices/{id}/multiple-names` and nothing more;
-  `tuya.Client` fans it out across the devices it judges worth labelling.
+  `tuya.AppAccountClient` fans it out across the devices it judges worth labelling.
 
   The rule binds `IoT`, not `cloud.Client`. The transport keeps its policy — token refresh,
   retry on code `1010` — because that is protocol correctness, not domain composition.
@@ -357,11 +367,17 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 ## Layout
 
+The root package is split **per door**, not per kind of declaration. What differs between
+tenancy models is the guard — the riskiest code here — so it should be readable in one file
+rather than assembled from a types file and a behavior file.
+
 ```
-client.go        tuya.Client, Account, sentinel errors, AccountStore / IoT interfaces
-                 (consumer-side). Types and wiring only.
-device.go        Owner-scoped device operations: the ownership guard, and the
-                 channel-name fan-out with the multi-gang judgement it needs.
+tuya.go          Package doc, the consumer-side IoT interface, ErrDeviceNotOwned.
+                 What both doors share.
+app_account.go   The app-account door, end to end: Account, ErrAccountNotLinked,
+                 AccountStore, AppAccountClient and its device operations —
+                 the ownership guard, and the channel-name fan-out with the
+                 multi-gang judgement it needs. (space.go joins it later.)
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
@@ -383,6 +399,9 @@ stores. Remaining work is additive:
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device control (`cloud/home.go`, `cloud/space.go`), added as
       new files on `cloud.IoT`.
+- [ ] `SpaceClient` — the door for Tuya's spatial tenancy model, alongside `AppAccountClient`.
+      Its guard depends on whether Tuya's space query returns a whole subtree or one level,
+      so it waits on `cloud/space.go`.
 - [ ] Ownership-check caching — deferred until a real throughput need justifies the invalidation
       cost.
 
