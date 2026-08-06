@@ -19,7 +19,6 @@ package tuya
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"go.naturallyfunny.dev/tuya/cloud"
@@ -58,11 +57,16 @@ type AccountStore interface {
 // methods Client needs. *cloud.IoT satisfies it. It is defined here, on the
 // consumer side, so Client can be unit-tested against a fake and so the cloud
 // package stays free of speculative interfaces.
+//
+// Every method here is one plain Tuya endpoint. Nothing this package needs is
+// asked of the layer below: the ownership guard and the channel-name resolution
+// are both composed here, from these primitives (see device.go), so the cloud
+// package never has to know that owners or multi-gang categories exist.
 type IoT interface {
 	ListDevices(ctx context.Context, tuyaUID string) ([]cloud.Device, error)
 	DeviceStatus(ctx context.Context, deviceID string) ([]cloud.DataPoint, error)
 	SendCommands(ctx context.Context, deviceID string, commands []cloud.DataPoint) error
-	HasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error)
+	DeviceChannelNames(ctx context.Context, deviceID string) ([]cloud.Channel, error)
 }
 
 // Client drives Tuya devices for an owner, resolving owner -> UID via the store
@@ -85,57 +89,4 @@ func New(iot IoT, store AccountStore) *Client {
 // that need to surface the owner / Tuya-UID mapping (e.g. a get_account tool).
 func (c *Client) Account(ctx context.Context, owner string) (Account, error) {
 	return c.store.Get(ctx, owner)
-}
-
-// ListDevices resolves the owner then lists their devices, each with its current
-// status. Returns ErrAccountNotLinked (from the store) if the owner has no linked
-// account.
-func (c *Client) ListDevices(ctx context.Context, owner string) ([]cloud.Device, error) {
-	acc, err := c.store.Get(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	return c.iot.ListDevices(ctx, acc.TuyaUID)
-}
-
-// DeviceStatus resolves the owner, asserts the device belongs to them, then
-// reads one device's status. Returns ErrAccountNotLinked if the owner has no
-// linked account, or ErrDeviceNotOwned if the device isn't on the resolved account.
-func (c *Client) DeviceStatus(ctx context.Context, owner, deviceID string) ([]cloud.DataPoint, error) {
-	acc, err := c.store.Get(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
-		return nil, err
-	}
-	return c.iot.DeviceStatus(ctx, deviceID)
-}
-
-// SendCommands resolves the owner, asserts the device belongs to them, then sends
-// DP commands to it. Returns ErrAccountNotLinked if the owner has no linked
-// account, or ErrDeviceNotOwned if the device isn't on the resolved account.
-func (c *Client) SendCommands(ctx context.Context, owner, deviceID string, cmds []cloud.DataPoint) error {
-	acc, err := c.store.Get(ctx, owner)
-	if err != nil {
-		return err
-	}
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
-		return err
-	}
-	return c.iot.SendCommands(ctx, deviceID, cmds)
-}
-
-// assertOwned checks that deviceID appears in the Tuya account's device list,
-// returning ErrDeviceNotOwned if not. Uses IoT.HasDevice — a lean, unenriched
-// check — so no channel-name fetches happen on ownership verification.
-func (c *Client) assertOwned(ctx context.Context, tuyaUID, deviceID string) error {
-	owned, err := c.iot.HasDevice(ctx, tuyaUID, deviceID)
-	if err != nil {
-		return fmt.Errorf("verify device ownership: %w", err)
-	}
-	if !owned {
-		return ErrDeviceNotOwned
-	}
-	return nil
 }
