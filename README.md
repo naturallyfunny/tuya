@@ -69,15 +69,18 @@ Three composable tiers. Bind the one your caller needs:
 | Your own owner ID, want ownership enforced               | `tuya.Client`  | **yes**  |
 
 - **`tuya.Client`** — the owner-scoped door. Resolves owner → Tuya UID through an
-  `AccountStore`, asserts the target device belongs to that account (a lean `HasDevice`
-  membership check), then delegates. It owns `Account`, `ErrAccountNotLinked`,
-  `ErrDeviceNotOwned`, and the `AccountStore` / `IoT` interfaces it drives.
+  `AccountStore`, asserts the target device belongs to that account (a lean, unenriched
+  listing plus a membership check), then delegates. It owns `Account`,
+  `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AccountStore` / `IoT` interfaces it
+  drives — including the ownership check itself, which is built here from plain `cloud`
+  primitives rather than asked of `cloud`.
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
   raw escape hatch for endpoints not yet wrapped.
-- **`cloud.IoT`** — a trusted, device-addressed facade over a `cloud.Client`
-  (`ListDevices`, `DeviceStatus`, `SendCommands`). No ownership guard; a holder can reach any
+- **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `ListDevices`, `DeviceStatus`,
+  `SendCommands`, `DeviceChannelNames`. One method per Tuya endpoint, so each call is one
+  request and nothing is composed behind your back. No ownership guard; a holder can reach any
   device the project can. Guarding it is `tuya.Client`'s job.
 
 Two ready-made `AccountStore` adapters ship in-tree — pick one, or implement the interface
@@ -170,8 +173,11 @@ Holding a trusted UID and don't need the guard? Use `cloud.IoT` directly:
 
 ```go
 acc, _ := store.Get(ctx, owner)
-devices, err := iot.ListDevices(ctx, acc.TuyaUID)   // UID-addressed
-status, err := iot.DeviceStatus(ctx, deviceID)      // device-addressed, no guard
+
+// Each call is exactly one Tuya request — no hidden fan-out, no enrichment.
+devices, err := iot.ListDevices(ctx, acc.TuyaUID)          // UID-addressed
+status, err := iot.DeviceStatus(ctx, deviceID)             // device-addressed, no guard
+channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, if you want them
 ```
 
 > `cloud.IoT` and `cloud.Client.Do` carry **no** ownership guard by design. Don't hand them to
@@ -227,22 +233,52 @@ Each one is a domain or usage constraint, not an oversight.
   `cloud`. Exporting a speculative interface from `cloud` would only add a
   compatibility burden that widens with every new domain.
 
-- **`enrichDevices` uses `sync.WaitGroup.Go` + `errors.Join`, not `errgroup`.**
+- **`resolveChannelNames` uses `sync.WaitGroup.Go` + `errors.Join`, not `errgroup`.**
   The semantics are **collect-all**: an agent wants to know *every* channel that failed to
-  enrich in one call. `errgroup.WithContext` is **fail-fast** — the first error cancels its
+  resolve in one call. `errgroup.WithContext` is **fail-fast** — the first error cancels its
   siblings, which is exactly the information we don't want to lose. The "free context
   propagation" people reach for is precisely first-error cancellation. `errgroup` would be
   right if fail-fast were the goal; here it's a behavior change, not a cleanup.
 
 - **The app-level token is cached in memory, with no store.**
   The Tuya credential is project-wide, not per-user, so there is nothing per-user to persist.
-  `cloud.Client` refreshes lazily on expiry and reactively on code `1010`. A token store
-  would add a dependency and a failure mode for state that is trivially re-fetched.
+  A token store would add a dependency and a failure mode for state that is trivially re-fetched.
 
-- **Ownership is checked by list-then-contains.**
-  Each guarded call lists the account's devices (raw, unenriched, via `HasDevice`) and checks
-  membership. Simple and correct for sporadic, one-intent-at-a-time traffic. Caching is
-  deferred until there's a real throughput need to justify the invalidation complexity.
+  The two refresh paths are deliberately different. `ensureValidToken` is lazy and trusts the
+  cached expiry — the right call before a request goes out. `forceRefreshToken` runs when Tuya
+  answers code `1010` and ignores that expiry entirely, because Tuya is the authority on whether
+  a token it issued is still good: it will reject tokens our clock still considers valid, after a
+  credential rotation or clock drift. Sharing one refresh path between the two looks like
+  cleanup and quietly disables the retry — the reactive call returns `nil` without doing
+  anything, and the replay carries the token Tuya just refused. A test pins this.
+
+- **Ownership is checked by list-then-contains, and the check lives in the root package.**
+  Each guarded call lists the account's devices and checks membership. Simple and correct for
+  sporadic, one-intent-at-a-time traffic; caching is deferred until there's a real throughput
+  need to justify the invalidation complexity.
+
+  The listing comes from `cloud.IoT.ListDevices` — one request — and the membership loop lives
+  in `tuya.Client.assertOwned`. `cloud` deliberately exposes no `HasDevice`-style helper: a
+  method whose reason to exist is a caller's guard would shape the lower layer around the upper
+  one. `cloud` answers "what is on this UID"; what that *means* is the root package's word. The
+  guard also never asks for channel labels — it needs identity, not names, and should not pay
+  one request per multi-gang device on every guarded call. A test asserts that.
+
+- **`cloud.IoT` is one method per Tuya endpoint, with no exceptions.**
+  If a method can't be pointed at exactly one endpoint, it is composing behavior, and
+  composition belongs to whoever wants it. Two methods used to break this and were moved to the
+  root package: `HasDevice` (born to serve the guard above) and `enrichDevices`, which carried
+  the judgment that categories `kg` and `cz*` are the multi-gang ones — an opinion about Tuya's
+  catalogue, not something its API states. What `cloud` offers instead is the primitive:
+  `DeviceChannelNames` wraps `GET /v1.0/devices/{id}/multiple-names` and nothing more;
+  `tuya.Client` fans it out across the devices it judges worth labelling.
+
+  The rule binds `IoT`, not `cloud.Client`. The transport keeps its policy — token refresh,
+  retry on code `1010` — because that is protocol correctness, not domain composition.
+
+  The cost is real and worth stating: a consumer binding `cloud.IoT` on its own gets no
+  batteries. Wanting channel labels means writing the fan-out. That is the trade for a layer
+  you can audit against the vendor's API docs line by line.
 
 - **`cloud.New` prefetches a token with `context.Background()`.**
   Construction-time prefetch turns a bad credential or unreachable region into a wiring-time
@@ -292,19 +328,26 @@ go test ./...
 
 The root `tuya` package — the ownership boundary, where a bug means a device reaches the wrong
 owner — is unit-tested against fake `IoT` and `AccountStore` implementations: happy paths,
-`ErrAccountNotLinked` / `ErrDeviceNotOwned`, and the short-circuit guards (a command must never
-reach an unowned device). That suite covers **95.8%** of the package's statements. The Firestore
+`ErrAccountNotLinked` / `ErrDeviceNotOwned`, the short-circuit guards (a command must never
+reach an unowned device), and the cost guard (an ownership check must never trigger
+channel-name requests). That suite covers **93.0%** of the package's statements. The Firestore
 `validateOwner` rules are table-tested (100% of that function).
 
-The rest is integration-shaped by nature: `cloud` signs and calls the live Tuya API, and the
-`postgres` / `firestore` stores talk to a real database (or the Firestore emulator). They carry
-no unit tests — mocking an HTTP round trip or a Firestore transaction would exercise the mock,
-not the behaviour — so their reported statement coverage is honestly low. Wiring them to live
-infrastructure behind a build tag is on the [roadmap](#status--roadmap).
+`cloud`'s token retry is tested against an `httptest` server (**61.6%** of the package). That is
+a real HTTP round trip over a real socket, not a mock: the stub answers code `1010` and the test
+asserts the retry carried a *different* access token. The behaviour is worth pinning because it
+is invisible from the outside — a retry that silently replays the rejected token looks identical
+to one that works, until a credential is rotated in production.
+
+The rest is integration-shaped by nature: signing against Tuya's live service, and the
+`postgres` / `firestore` stores talking to a real database or the Firestore emulator. Faking a
+Firestore transaction would exercise the fake, not the behaviour, so their reported coverage is
+honestly low. Wiring them to live infrastructure behind a build tag is on the
+[roadmap](#status--roadmap).
 
 ## Compatibility
 
-- **Go 1.25+**, per `go.mod`. The concurrent enrichment in `enrichDevices` uses
+- **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
 - **The dependency cost is opt-in.** The root `tuya` package and the `cloud` layer import
   **only the standard library** — bind those, bring your own `AccountStore`, and you add nothing
@@ -315,12 +358,14 @@ infrastructure behind a build tag is on the [roadmap](#status--roadmap).
 ## Layout
 
 ```
-client.go        tuya.Client — owner-scoped door + ownership guard, Account, sentinel
-                 errors, AccountStore / IoT interfaces (consumer-side).
+client.go        tuya.Client, Account, sentinel errors, AccountStore / IoT interfaces
+                 (consumer-side). Types and wiring only.
+device.go        Owner-scoped device operations: the ownership guard, and the
+                 channel-name fan-out with the multi-gang judgement it needs.
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      typed Device/DataPoint/Channel + device operations, enrichment.
+  device.go      typed Device/DataPoint/Channel + one method per device endpoint.
 postgres/
   store.go       AccountStore on PostgreSQL + embedded migration runner.
   migrations/    embedded .up.sql / .down.sql.

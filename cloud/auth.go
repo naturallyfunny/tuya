@@ -41,25 +41,19 @@ type signature struct {
 // fully populated signature. accessToken is "" for token requests.
 func hmacSign(accessID, accessSecret, accessToken, method, path string, body []byte) (*signature, error) {
 	timestamp := strconv.FormatInt(time.Now().UnixNano()/int64(time.Millisecond), 10)
-
 	hash := sha256.New()
 	hash.Write(body)
 	contentSha256 := hex.EncodeToString(hash.Sum(nil))
-
 	stringToSign := method + "\n" + contentSha256 + "\n\n" + path
-
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 	nonce := hex.EncodeToString(nonceBytes)
-
 	tuyaStr := accessID + accessToken + timestamp + nonce + stringToSign
-
 	mac := hmac.New(sha256.New, []byte(accessSecret))
 	mac.Write([]byte(tuyaStr))
 	sign := strings.ToUpper(hex.EncodeToString(mac.Sum(nil)))
-
 	return &signature{
 		Sign:        sign,
 		Timestamp:   timestamp,
@@ -106,70 +100,77 @@ type token struct {
 func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	const path = "/v1.0/token?grant_type=1"
 	fullURL := c.baseURL + path
-
 	sig, err := c.signTokenRequest(http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token signature: %w", err)
 	}
-
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request to %s: %w", fullURL, err)
 	}
-
 	setAuthHeaders(httpReq, c.accessID, sig)
-
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("token request to %s failed: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
-
 	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response from %s: %w", fullURL, err)
 	}
-
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("token request to %s returned non-200 status code: %d, body: %s", fullURL, resp.StatusCode, string(respBodyBytes))
 	}
-
 	var tuyaResp response
 	if err := json.Unmarshal(respBodyBytes, &tuyaResp); err != nil {
 		return nil, fmt.Errorf("failed to decode token response from %s: %w", fullURL, err)
 	}
-
 	return &tuyaResp, nil
 }
 
+// updateToken fetches a fresh token and stores it. The caller must already hold
+// c.tokenLock for writing: this both writes c.token and reaches signTokenRequest,
+// which must not take the lock itself.
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}
-
 	if !resp.Success {
 		return fmt.Errorf("Tuya token request failed with code %d: %s", resp.Code, resp.Msg)
 	}
-
 	var newToken token
 	if err := json.Unmarshal(resp.Result, &newToken); err != nil {
 		return fmt.Errorf("failed to unmarshal token result: %w", err)
 	}
-
 	newToken.ExpireTime = time.Now().Unix() + newToken.ExpireTime
-
 	c.token = &newToken
 	return nil
 }
 
+// ensureValidToken fetches a token if there is none, or if the cached one has
+// expired by our own clock. It is the lazy path, taken before a request goes
+// out. Use forceRefreshToken instead once Tuya has rejected a token: this
+// function trusts the cached expiry and would do nothing.
 func (c *Client) ensureValidToken(ctx context.Context) error {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
-
 	if c.token != nil && c.token.ExpireTime > time.Now().Unix() {
 		return nil
 	}
+	return c.updateToken(ctx)
+}
 
+// forceRefreshToken fetches a new token whatever the cached expiry claims.
+//
+// This is the reactive path, for when Tuya answers code 1010 (token invalid).
+// Its verdict beats our local clock: a token can be dead well before the expiry
+// we recorded — the project credential was rotated, our clock drifted, or
+// another process holding the same access ID caused Tuya to issue a new one.
+// Asking ensureValidToken here would return nil without doing anything, and the
+// retry would replay the exact token Tuya just refused.
+func (c *Client) forceRefreshToken(ctx context.Context) error {
+	c.tokenLock.Lock()
+	defer c.tokenLock.Unlock()
 	return c.updateToken(ctx)
 }
