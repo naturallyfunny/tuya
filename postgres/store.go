@@ -148,7 +148,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	`); err != nil {
 		return fmt.Errorf("postgres: create migrations table: %w", err)
 	}
-
 	entries, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("postgres: read migrations: %w", err)

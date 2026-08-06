@@ -19,7 +19,6 @@ func TestValidateOwner(t *testing.T) {
 			t.Errorf("validateOwner(%q): unexpected error: %v", owner, err)
 		}
 	}
-
 	invalid := []string{
 		"",
 		".", "..",
