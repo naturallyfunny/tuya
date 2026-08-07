@@ -6,18 +6,22 @@
 
 A small, interface-first Go library for the [Tuya Cloud OpenAPI](https://developer.tuya.com/en/docs/cloud/).
 It signs and authenticates requests, manages the app-level access token, and exposes typed
-device and space operations — behind an ownership boundary you can hand to an untrusted caller.
-Both of the ways Tuya lets a cloud project reach devices get a door: through app accounts you
-link, or through the project's own tree of spaces.
+device and space operations. Above that it does the job Tuya leaves to you: **mapping your own
+identity system onto Tuya's**. Both of the ways Tuya lets a cloud project reach devices get a
+door — through app accounts you link, or through the project's own tree of spaces.
 
-It is built to be used as a **tool invoked by an AI agent**: low-traffic, one action per user
-intent (list devices, read a device's state, send it a command). The design leans on that
-usage — see [Design rationale](#design-rationale) — rather than on the assumptions of a
-high-throughput service.
+It is **agnostic about who calls it**. An HTTP backend, a batch worker, a CLI, an agent
+toolset — the library neither knows nor cares. It **answers questions about ownership; it does
+not enforce them**, because "this device is not on the owner's account" is not always a reason
+to refuse: a product with device sharing legitimately reaches across accounts, and a library
+that hard-refused those calls would block the correct integration to protect the careless one.
+Where an answer is expensive, [Design rationale](#design-rationale) states the cost instead of
+assuming you won't ask often.
 
 ```go
-devices, err := client.ListDevices(ctx, owner)                 // by your own owner ID
-err = client.SendCommands(ctx, owner, id, []cloud.DataPoint{   // ownership asserted first
+devices, err := client.ListDevices(ctx, owner)        // by your own owner ID
+ok, err := client.HasDevice(ctx, owner, id)           // a fact, for you to act on
+err = iot.SendCommands(ctx, id, []cloud.DataPoint{
     {Code: "switch_1", Value: true},
 })
 ```
@@ -53,31 +57,30 @@ out of that, and the library keeps them in separate layers so neither leaks into
 
 1. **Talking to Tuya** — signing, the project-level token, typed device calls. Pure Tuya,
    keyed by UID, no idea who "owns" a device. This is the `cloud` subpackage.
-2. **Owning a device** — mapping *your* opaque owner ID to a human's Tuya UID and refusing
-   any call that crosses accounts. This is the root `tuya` package.
+2. **Owning a device** — mapping *your* opaque owner ID to a human's Tuya UID, and answering
+   what that mapping makes answerable. This is the root `tuya` package.
 
-The payoff: the ownership guard lives at a single door (`tuya.AppAccountClient`) that
-*cannot* be opened without first resolving an owner. The trusted, guard-free layer
-(`cloud.IoT`) still exists for code that legitimately holds a UID — but an agent never
-touches it.
+The payoff: the mapping lives in one place, and so does the only question it makes answerable —
+*is this Tuya handle under the identity linked to this owner?* Nothing else in your stack holds
+both halves, so nothing else can answer it. What the answer **means** is yours: refuse, allow,
+or check it against your own sharing rules first.
 
 ## Concepts
 
 Three composable tiers. Bind the one your caller needs:
 
-| You have / need                                          | Use                     | Guarded? |
-| -------------------------------------------------------- | ----------------------- | -------- |
-| Just the transport (token lifecycle, signing, raw `Do`)  | `cloud.Client`          | no       |
-| A Tuya UID or space ID, want typed device and space ops  | `cloud.IoT`             | no       |
-| Your own owner ID, one Tuya app account per human        | `tuya.AppAccountClient` | **yes**  |
-| Your own owner ID, one space per owner                    | `tuya.SpaceClient`      | **yes**  |
+| You have / need                                          | Use                     | Resolves an owner? |
+| -------------------------------------------------------- | ----------------------- | ------------------ |
+| Just the transport (token lifecycle, signing, raw `Do`)  | `cloud.Client`          | no                 |
+| A Tuya UID or space ID, want typed device and space ops  | `cloud.IoT`             | no                 |
+| Your own owner ID, one Tuya app account per human        | `tuya.AppAccountClient` | **yes**            |
+| Your own owner ID, one space per owner                    | `tuya.SpaceClient`      | **yes**            |
 
-- **`tuya.AppAccountClient`** — the owner-scoped door. Resolves owner → Tuya UID through an
-  `AppAccountStore`, asserts the target device belongs to that account (a lean, unenriched
-  listing plus a membership check), then delegates. It owns `AppAccount`,
-  `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AppAccountStore` / `IoT` interfaces it
-  drives — including the ownership check itself, which is built here from plain `cloud`
-  primitives rather than asked of `cloud`.
+- **`tuya.AppAccountClient`** — resolves owner → Tuya UID through an `AppAccountStore`, lists
+  that account's devices with channel names filled in, and answers `HasDevice`. It owns
+  `AppAccount`, `ErrAccountNotLinked`, and the `AppAccountStore` / `IoT` interfaces it drives —
+  including the membership check itself, which is built here from plain `cloud` primitives
+  rather than asked of `cloud`.
 
   The name states **which of Tuya's two device models** it speaks, not verbosity.
   `AppAccountClient` is the app-account one: every human holds their own Tuya app account, you
@@ -99,11 +102,13 @@ Three composable tiers. Bind the one your caller needs:
   and treat everything below it as theirs — property, hotels, offices — but the library only
   knows the link.
 
-  It carries **two** guards, because they cost different amounts. Space operations ask Tuya one
-  question — *is this space inside the owner's?* — and containment is transitive, so one boolean
-  also settles deletes: everything under a space you own is yours too. Device operations get no
-  such shortcut; see the [rationale](#design-rationale). Throughout the door, a zero space ID
-  means *the owner's own space*, never the project's top level.
+  Its space operations do refuse a space outside the owner's subtree — not as a security policy
+  but because the IDs they take are owner-relative by construction: a zero ID means *the owner's
+  own space*, never the project's top level, and the door has no way to name someone else's space
+  in the first place. That check is one question to Tuya, and containment is transitive, so one
+  boolean also settles deletes. Devices are the opposite case: `ContainsDevice` reports rather
+  than refuses, and its cost is worth reading before you build on it — see the
+  [rationale](#design-rationale).
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
@@ -113,8 +118,9 @@ Three composable tiers. Bind the one your caller needs:
   `DeleteSpace`, `SpaceResources`, `ChildSpaces`, `RootSpaces`, `SpaceContains` for spaces. One
   method per Tuya endpoint, so each call is one request and nothing is composed behind your
   back — including pagination, which is handed to you a page at a time rather than looped over
-  silently. No ownership guard; a holder can reach any device or space the project can.
-  Guarding it is the root package's job.
+  silently. No notion of an owner at all; a holder can reach any device or space the project can.
+  Device commands go through here — they are addressed by device ID, which is already a Tuya
+  handle, so there is nothing for the root doors to resolve.
 
 Ready-made store adapters ship in-tree — pick one, or implement the interfaces yourself:
 
@@ -198,8 +204,7 @@ wrong data center still mints a token, then refuses every business call, so a cr
 
 ## Usage
 
-Drive devices by *your* owner ID. Every mutating call resolves the owner and asserts
-ownership before anything reaches Tuya:
+List devices by *your* owner ID, and ask about ownership when you need to know:
 
 ```go
 devices, err := client.ListDevices(ctx, owner)      // typed devices + per-channel names
@@ -207,35 +212,41 @@ if errors.Is(err, tuya.ErrAccountNotLinked) {
     // route the human into the account-linking flow
 }
 
-status, err := client.DeviceStatus(ctx, owner, id)  // asserts ownership, then reads
-
-err = client.SendCommands(ctx, owner, id, []cloud.DataPoint{
-    {Code: "switch_1", Value: true},                // asserts ownership, then sends
-})
-if errors.Is(err, tuya.ErrDeviceNotOwned) {
-    // device doesn't belong to this owner
-}
-
 acc, err := client.Account(ctx, owner)              // the linked owner ↔ UID mapping
+
+ok, err := client.HasDevice(ctx, owner, id)         // one request, flat
 ```
 
-Both sentinel errors are comparable with `errors.Is`, so a caller can branch on "not linked"
-(send the human into onboarding) versus "not owned" (a real authorization failure).
+`HasDevice` returns a fact, not a verdict. A `false` means the device is not listed under that
+owner's Tuya account — which is exactly what you'd expect for a device someone shared with them,
+so the decision is yours to make:
 
-Holding a trusted UID and don't need the guard? Use `cloud.IoT` directly:
+```go
+switch {
+case err != nil:
+    return err                                  // the lookup failed; not the same as "no"
+case ok, myShareRules.Allow(owner, id):
+    err = iot.SendCommands(ctx, id, []cloud.DataPoint{{Code: "switch_1", Value: true}})
+default:
+    return ErrForbidden                         // your rule, your error
+}
+```
+
+Commands themselves go through `cloud.IoT`. A device ID is already a Tuya handle, so there is
+nothing about it for the root door to resolve:
 
 ```go
 acc, _ := store.Get(ctx, owner)
 
 // Each call is exactly one Tuya request — no hidden fan-out, no enrichment.
 devices, err := iot.ListDevices(ctx, acc.TuyaUID)          // UID-addressed
-status, err := iot.DeviceStatus(ctx, deviceID)             // device-addressed, no guard
+status, err := iot.DeviceStatus(ctx, deviceID)             // device-addressed
 channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, if you want them
 ```
 
-> `cloud.IoT` and `cloud.Client.Do` carry **no** ownership guard by design. Don't hand them to
-> an untrusted caller (e.g. an agent) — route that traffic through `tuya.AppAccountClient` or
-> `tuya.SpaceClient`.
+> `cloud.IoT` and `cloud.Client.Do` know nothing about owners. A holder can reach every device
+> in the project. That is the point — the root doors tell you whose a handle is, and you decide
+> what follows.
 
 ### Spaces
 
@@ -248,15 +259,23 @@ rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren) // on
 room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin")          // under the owner's
 
 things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree) // devices in it
-err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{
-    {Code: "switch_1", Value: true},                                       // ownership asserted
-})
 if errors.Is(err, tuya.ErrSpaceNotOwned) {
     // the space is outside the owner's subtree
 }
 
 space, err := hotel.SpaceOf(ctx, owner)                                    // which space is theirs
 ```
+
+The two questions the door can answer about a space and a device:
+
+```go
+ok, err := hotel.ContainsSpace(ctx, owner, spaceID)   // one request
+ok, err := hotel.ContainsDevice(ctx, owner, deviceID) // scans the subtree — read the cost first
+```
+
+`ContainsDevice` is the expensive one, and deliberately a call you make rather than a check that
+runs behind every command. If your own database already records which space a device sits in, it
+will answer faster than this ever can, and you should ask it instead.
 
 Listings take an explicit `cloud.Scope` — `cloud.DirectChildren` or `cloud.Subtree` — because
 Tuya's own default for that parameter is undocumented, and a listing that quietly covers the
@@ -312,11 +331,21 @@ Each one is a domain or usage constraint, not an oversight.
   would only move an `io.ReadAll` inside `Do` and advertise streaming that never happens.
   Callers already hold `[]byte` from `json.Marshal`.
 
-- **The ownership guard lives at the root (`tuya.AppAccountClient`), not in `cloud.IoT`.**
-  `cloud.IoT` is a trusted, device-addressed layer with no owner check — by design. Pushing
-  the guard *up* to a single owner-scoped door makes it un-bypassable: you cannot reach a
-  device without first resolving an owner. A guard buried in the device layer would have to
-  thread a UID through every call and could still be sidestepped by a sibling method.
+- **The root doors report ownership; they do not enforce it.**
+  Earlier versions guarded: `DeviceStatus` and `SendCommands` sat on both doors and refused any
+  device that failed an ownership check. That is gone, for three reasons. A mandatory guard
+  **blocks correct integrations** — device sharing across accounts is an ordinary product
+  feature, and a shared device is by definition absent from the owner's listing, so that
+  consumer was forced down to `cloud.IoT` and lost the owner resolution that was the only thing
+  it wanted here. A device ID arriving from somewhere untrustworthy is **the consumer's design
+  decision**, not something a mapping library should police. And once the check is gone, `owner`
+  on a device-addressed method resolves nothing at all — so the methods went with it rather than
+  keeping a parameter that is read and discarded.
+
+  What replaces them is a question: `HasDevice`, `ContainsSpace`, `ContainsDevice`, each
+  returning a `bool`. Commands go through `cloud.IoT`. If you want a guarded wrapper, it is three
+  lines in your own code, written once, with your rules in the middle — and nobody else's
+  product is bent around them.
 
 - **`cloud` exports concrete types; the *consumer* declares the interface.**
   `cloud.NewIoT` returns a concrete `*cloud.IoT`. The root package declares `tuya.IoT` as
@@ -327,7 +356,7 @@ Each one is a domain or usage constraint, not an oversight.
   compatibility burden that widens with every new domain.
 
 - **`resolveChannelNames` uses `sync.WaitGroup.Go` + `errors.Join`, not `errgroup`.**
-  The semantics are **collect-all**: an agent wants to know *every* channel that failed to
+  The semantics are **collect-all**: the caller wants to know *every* channel that failed to
   resolve in one call. `errgroup.WithContext` is **fail-fast** — the first error cancels its
   siblings, which is exactly the information we don't want to lose. The "free context
   propagation" people reach for is precisely first-error cancellation. `errgroup` would be
@@ -345,39 +374,49 @@ Each one is a domain or usage constraint, not an oversight.
   cleanup and quietly disables the retry — the reactive call returns `nil` without doing
   anything, and the replay carries the token Tuya just refused. A test pins this.
 
-- **Ownership is checked by list-then-contains, and the check lives in the root package.**
-  Each guarded call lists the account's devices and checks membership. Simple and correct for
-  sporadic, one-intent-at-a-time traffic; caching is deferred until there's a real throughput
-  need to justify the invalidation complexity.
+- **`HasDevice` answers by list-then-contains, and lives in the root package.**
+  It lists the account's devices and checks membership. The cost is **one request, flat** no
+  matter how many devices the account has. Nothing is cached: an ownership cache has to be
+  invalidated when a device is added, removed or re-linked, and the library has no way to learn
+  about any of those. A consumer that can learn about them is in a better position to cache than
+  this library is.
 
-  The listing comes from `cloud.IoT.ListDevices` — one request — and the membership loop lives
-  in `tuya.AppAccountClient.assertOwned`. `cloud` deliberately exposes no `HasDevice`-style helper: a
-  method whose reason to exist is a caller's guard would shape the lower layer around the upper
-  one. `cloud` answers "what is on this UID"; what that *means* is the root package's word. The
-  guard also never asks for channel labels — it needs identity, not names, and should not pay
-  one request per multi-gang device on every guarded call. A test asserts that.
+  The listing comes from `cloud.IoT.ListDevices`. `cloud` deliberately exposes no equivalent: a
+  method whose reason to exist is the layer above would shape the lower layer around the upper
+  one. `cloud` answers "what is on this UID"; the root package is what knows that UID belongs to
+  your owner. `HasDevice` never asks for channel labels either — it needs identity, not names,
+  and should not pay one request per multi-gang device. A test asserts that.
 
-- **The spatial door carries two guards, because Tuya prices them very differently.**
-  Guarding a *space* costs one request: `GET /v2.0/cloud/space/relation` answers whether a space
+  A device that is absent is a plain `false`; only a failed lookup is an error. "Not found" and
+  "could not look" must not arrive as the same answer to code that branches on it.
+
+- **The spatial door refuses foreign *spaces* but only reports on *devices*, because Tuya prices
+  the two questions very differently — and only one of them is owner-relative.**
+  Checking a *space* costs one request: `GET /v2.0/cloud/space/relation` answers whether a space
   sits inside the owner's, and containment is transitive — confirmed against the live API, where
   a space answers `true` for its grandchild. That also settles deletes, since everything
   under a space you own is yours too. Two edges of that endpoint shape the guard: a space
   compared against *itself* answers `false`, so the door grants an owner their own space without
   asking (an optimization that is also a correctness fix), and a space the project cannot see at
   all is refused outright with code `40001900` rather than answered `false` — which the door
-  translates to `ErrSpaceNotOwned`, because for the owner it means the same thing. Guarding a
-  *device* gets no such shortcut. Tuya has no "which space holds this device" lookup at all: `GET
-  /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset ID.
-  The only route is to walk the subtree's resources and look for the ID, paginated, before every
-  guarded call.
+  translates to `ErrSpaceNotOwned`, because for the owner it means the same thing.
 
-  The library pays that cost rather than passing it on. The alternative — guard spaces only, let
-  each consumer check devices against its own mirror of the property — is genuinely cheaper for
-  a consumer that already stores which room each device is in. But it leaves an agent that only
-  wants to switch a light holding `cloud.IoT`, which is precisely what this README tells you
-  never to do. A door that cannot turn on a lamp is not a door. The walk stops at the first
-  match, so the common case is one request; a consumer that would rather answer from its own
-  database can still bind `cloud.IoT` and guard it itself.
+  The space operations keep that refusal because their IDs are owner-relative by construction —
+  a zero means the owner's own space, and the door offers no vocabulary for anyone else's. There
+  is no correct call it can block.
+
+  A *device* gets no such shortcut. Tuya has no "which space holds this device" lookup at all:
+  `GET /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset
+  ID. The only route is to enumerate the subtree's resources and look for the ID, paginated.
+  `ContainsDevice` does exactly that and **know the cost before you build on it**: it stops at
+  the first match, so a lucky call is one request, but the page holding your device is not
+  guaranteed to be the first, and the ceiling is 50 pages of 200 resources. Unlike `HasDevice`,
+  this **grows with the size of the estate**.
+
+  That is precisely why it is a call you make and not a check that runs behind every command. If
+  your own database already records which space each device sits in, it will answer faster than
+  this ever can, and you should ask it instead. Giving up at the page cap is an error, never a
+  `false` — "not there" and "stopped looking" are different answers.
 
 - **`cloud.Scope` is a required argument, not an option with a default.**
   Tuya's `only_sub` parameter decides whether a listing covers direct children or the whole
@@ -435,7 +474,8 @@ Each one is a domain or usage constraint, not an oversight.
 - **`cloud.IoT` is one method per Tuya endpoint, with no exceptions.**
   If a method can't be pointed at exactly one endpoint, it is composing behavior, and
   composition belongs to whoever wants it. Two methods used to break this and were moved to the
-  root package: `HasDevice` (born to serve the guard above) and `enrichDevices`, which carried
+  root package: `HasDevice` (born to serve the layer above, and now living where the owner
+  mapping actually is) and `enrichDevices`, which carried
   the judgment that categories `kg` and `cz*` are the multi-gang ones — an opinion about Tuya's
   catalogue, not something its API states. What `cloud` offers instead is the primitive:
   `DeviceChannelNames` wraps `GET /v1.0/devices/{id}/multiple-names` and nothing more;
@@ -478,16 +518,18 @@ To keep the surface honest, the library deliberately does **not**:
   owner; obtaining that UID — the human granting your Tuya project access to their account —
   happens upstream in your onboarding. The library's world begins once you can call
   `store.Link(owner, tuyaUID)`.
-- **Wrap the whole Tuya Cloud OpenAPI.** Only what an agent needs is typed: the device
-  operations and Tuya's seven space-management endpoints. `cloud.Client.Do` is the raw escape
-  hatch for everything else — deliberately unguarded, and not something to hand an agent.
-- **Optimize for throughput.** Ownership is re-checked on every call — a device listing in the
-  app-account model, a subtree walk in the spatial one — and the token lives in memory. Both are
-  right for sporadic, one-intent-at-a-time agent traffic and would only be rebuilt (caching,
-  invalidation) if a real throughput need appeared. See
-  [Design rationale](#design-rationale).
-- **Verify trust for `cloud.IoT`.** That layer is device-addressed with no owner check by design;
-  deciding who may hold it is the consumer's job.
+- **Wrap the whole Tuya Cloud OpenAPI.** Two domains are typed so far: device operations and
+  Tuya's seven space-management endpoints. `cloud.Client.Do` is the raw escape hatch for
+  everything else — deliberately unguarded.
+- **Cache ownership answers.** Every `HasDevice` / `ContainsDevice` asks Tuya afresh. Not
+  because the library assumes you ask rarely, but because invalidating that cache needs events
+  (device added, removed, re-linked) that Tuya never tells us about. Guessing a TTL on your
+  behalf would trade a stated cost for an unstated staleness window. The costs are written down
+  in [Design rationale](#design-rationale) so you can cache at a layer that knows better.
+- **Enforce ownership.** The doors answer the question; acting on the answer is yours. This is
+  deliberate — see the rationale above — and it is what keeps consumers with device sharing,
+  delegated access or their own permission model from being locked out of the root doors.
+- **Decide who may hold `cloud.IoT`.** That layer has no notion of an owner by design.
 
 ## Testing
 
@@ -495,16 +537,17 @@ To keep the surface honest, the library deliberately does **not**:
 go test ./...
 ```
 
-The root `tuya` package — the ownership boundary, where a bug means a device reaches the wrong
-owner — is unit-tested against fake `IoT`, `SpaceIoT` and store implementations: happy paths,
-`ErrAccountNotLinked` / `ErrDeviceNotOwned` / `ErrSpaceNotLinked` / `ErrSpaceNotOwned`, the
-short-circuit guards (a command must never reach an unowned device), and the cost guard (an
-ownership check must never trigger channel-name requests). For the spatial door it also pins
-that a zero space ID resolves to the owner's own space without asking Tuya, that the owner's own
-space cannot be deleted through the door, that a space the project cannot see is refused as unowned
-rather than surfacing a raw API error, and that the paginated device walk terminates on a
-stalled cursor *and* on a cursor that keeps advancing forever. That suite covers **88.4%** of
-the package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
+The root `tuya` package — where the owner mapping lives, and where a wrong answer misleads
+whatever authorization you build on it — is unit-tested against fake `IoT`, `SpaceIoT` and store
+implementations: happy paths, `ErrAccountNotLinked` / `ErrSpaceNotLinked` / `ErrSpaceNotOwned`,
+and the distinction the ownership answers depend on — an absent device is a plain `false` while
+a failed lookup is an error, never the two collapsed together. It also pins the cost rule (an
+ownership answer must never trigger channel-name requests). For the spatial door it covers a
+zero space ID resolving to the owner's own space without asking Tuya, the owner's own space
+being undeletable through the door, a space the project cannot see being reported as unowned
+rather than surfacing a raw API error, and the paginated device scan terminating on a stalled
+cursor *and* on a cursor that keeps advancing forever. That suite covers **87.6%** of the
+package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
 function).
 
 `cloud` is tested against an `httptest` server (**71.8%** of the package) — real HTTP round trips
@@ -541,21 +584,20 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 ## Layout
 
 Every package is split **per door**, not per kind of declaration. What differs between the two
-doors is the guard — the riskiest code here — so it should be readable in one file
+doors is how each maps an owner onto Tuya's handles, so that should be readable in one file
 rather than assembled from a types file and a behavior file. The store adapters follow the
 same rule, which is why they are `app_account.go` and not `store.go`.
 
 ```
-iot.go           Package doc, the consumer-side IoT interface, ErrDeviceNotOwned.
+iot.go           Package doc and the consumer-side IoT interface.
                  What both doors share.
 app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLinked,
-                 AppAccountStore, AppAccountClient and its device operations —
-                 the ownership guard, and the channel-name fan-out with the
-                 multi-gang judgement it needs.
+                 AppAccountStore, AppAccountClient — ListDevices, HasDevice, and
+                 the channel-name fan-out with the multi-gang judgement it needs.
 space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
                  ErrSpaceNotOwned, ErrOwnerSpaceProtected, SpaceStore, SpaceIoT,
-                 SpaceClient — and both guards, the cheap containment check and
-                 the bounded subtree walk devices need.
+                 SpaceClient — the space operations with their containment check,
+                 plus ContainsSpace and the bounded subtree scan of ContainsDevice.
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
@@ -576,7 +618,7 @@ The public API above is stable and in use — the owner-scoped doors, the `cloud
 stores. Remaining work is additive:
 
 - [x] MIT `LICENSE`.
-- [x] Unit tests on both ownership boundaries and Firestore owner validation.
+- [x] Unit tests on both owner mappings and Firestore owner validation.
 - [x] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial model, alongside
       `AppAccountClient` / `AppAccountStore`, over `cloud/space.go`.
 - [x] Settle Tuya's self-contradicting reference against the live API: parameter spelling,
@@ -585,8 +627,9 @@ stores. Remaining work is additive:
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device and space control (`cloud/home.go`), added as new files
       on `cloud.IoT`.
-- [ ] Ownership-check caching — deferred until a real throughput need justifies the invalidation
-      cost.
+- [x] Replace the mandatory ownership guards with reportable answers (`HasDevice`,
+      `ContainsSpace`, `ContainsDevice`), so consumers with device sharing or their own
+      permission model are not locked out. See [Design rationale](#design-rationale).
 
 ## License
 

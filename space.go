@@ -44,14 +44,18 @@ type SpaceIoT interface {
 	ChildSpaces(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.SpaceID, cloud.Page, error)
 	SpaceResources(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.Resource, cloud.Page, error)
 	SpaceContains(ctx context.Context, parent, child cloud.SpaceID) (bool, error)
-	DeviceStatus(ctx context.Context, deviceID string) ([]cloud.DataPoint, error)
-	SendCommands(ctx context.Context, deviceID string, commands []cloud.DataPoint) error
 }
 
-// SpaceClient is the owner-scoped door for Tuya spaces. An owner is linked to
-// one space, and every method resolves that link first, then refuses anything
-// that is neither that space nor inside it. A zero space ID always means the
-// owner's own space — never the cloud project's top level.
+// SpaceClient maps an owner onto the one Tuya space it is linked to. A zero
+// space ID always means that space — never the cloud project's top level — so
+// the common calls need no ID at all and no ID reachable from here names another
+// owner's space by accident.
+//
+// The space operations do refuse a space outside the owner's subtree, because
+// the IDs they take are owner-relative by construction: this door has no way to
+// express an operation on someone else's space, and the check that enforces it
+// is a single request Tuya answers directly. Devices are different — see
+// ContainsDevice, which reports rather than refuses.
 type SpaceClient struct {
 	iot   SpaceIoT
 	store SpaceStore
@@ -142,26 +146,71 @@ func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud
 	return c.iot.SpaceResources(ctx, target, scope, opts...)
 }
 
-func (c *SpaceClient) DeviceStatus(ctx context.Context, owner, deviceID string) ([]cloud.DataPoint, error) {
-	ownerSpace, err := c.ownerSpace(ctx, owner)
+// ContainsSpace reports whether id is the owner's own space or sits somewhere
+// below it. It is a fact for the caller to act on, not a refusal — the space
+// operations on this door apply it themselves, but a caller with its own rules
+// about who may reach where can ask directly.
+//
+// One request, and containment is transitive, so a true covers the whole subtree
+// under id as well.
+func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id cloud.SpaceID) (bool, error) {
+	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	if err := c.assertDeviceOwned(ctx, ownerSpace, deviceID); err != nil {
-		return nil, err
+	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
+		if errors.Is(err, ErrSpaceNotOwned) {
+			return false, nil
+		}
+		return false, err
 	}
-	return c.iot.DeviceStatus(ctx, deviceID)
+	return true, nil
 }
 
-func (c *SpaceClient) SendCommands(ctx context.Context, owner, deviceID string, cmds []cloud.DataPoint) error {
+// ContainsDevice reports whether deviceID sits anywhere in the subtree under the
+// owner's space. It is the spatial counterpart of AppAccountClient.HasDevice and
+// carries the same meaning: a fact, not a verdict.
+//
+// Read the cost before building on it. Tuya has no "which space holds this
+// device" lookup — GET /v2.0/cloud/thing/{device_id} carries no space or asset
+// ID — so the only route is to enumerate the subtree's resources and look for
+// the ID. It stops at the first match, so a lucky call is one request, but the
+// page holding the device is not guaranteed to be the first, and the ceiling is
+// deviceScanMaxPages pages of deviceScanPageSize resources. Unlike HasDevice,
+// this grows with the size of the estate. A caller that already mirrors which
+// space each device sits in will answer far faster from its own records, and
+// should.
+//
+// The scan ends where Tuya ends it — an empty page with no cursor — and also on
+// a cursor that stopped moving, with a cap on how many pages it reads. Only the
+// first is Tuya's documented behaviour; the other two keep a surprise costing an
+// error rather than an endless loop.
+func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string) (bool, error) {
 	ownerSpace, err := c.ownerSpace(ctx, owner)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := c.assertDeviceOwned(ctx, ownerSpace, deviceID); err != nil {
-		return err
+	var cursor int64
+	for range deviceScanMaxPages {
+		opts := []cloud.PageOption{cloud.WithPageSize(deviceScanPageSize)}
+		if cursor != 0 {
+			opts = append(opts, cloud.WithLastRowKey(cursor))
+		}
+		resources, page, err := c.iot.SpaceResources(ctx, ownerSpace, cloud.Subtree, opts...)
+		if err != nil {
+			return false, fmt.Errorf("scan resources of space %s: %w", ownerSpace, err)
+		}
+		for _, resource := range resources {
+			if resource.Type == cloud.ResourceDevice && resource.ID == deviceID {
+				return true, nil
+			}
+		}
+		if len(resources) == 0 || page.LastRowKey == 0 || page.LastRowKey == cursor {
+			return false, nil
+		}
+		cursor = page.LastRowKey
 	}
-	return c.iot.SendCommands(ctx, deviceID, cmds)
+	return false, fmt.Errorf("scan resources of space %s: did not end after %d pages", ownerSpace, deviceScanMaxPages)
 }
 
 func (c *SpaceClient) ownerSpace(ctx context.Context, owner string) (cloud.SpaceID, error) {
@@ -212,39 +261,6 @@ func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target c
 }
 
 const (
-	deviceGuardPageSize = 200
-	deviceGuardMaxPages = 50
+	deviceScanPageSize = 200
+	deviceScanMaxPages = 50
 )
-
-// assertDeviceOwned is the expensive half of the asymmetry: Tuya has no "which
-// space holds this device" lookup, so checking a device means walking the
-// resources of the owner's whole subtree. It runs before every guarded device
-// call and stops at the first match, so the usual cost is one request.
-//
-// The walk ends where Tuya ends it — an empty page with no cursor — and also on
-// a cursor that stopped moving, with a cap on how many pages it will read. Only
-// the first of those is Tuya's documented behaviour; the other two keep a
-// surprise costing a refusal rather than an endless loop.
-func (c *SpaceClient) assertDeviceOwned(ctx context.Context, ownerSpace cloud.SpaceID, deviceID string) error {
-	var cursor int64
-	for range deviceGuardMaxPages {
-		opts := []cloud.PageOption{cloud.WithPageSize(deviceGuardPageSize)}
-		if cursor != 0 {
-			opts = append(opts, cloud.WithLastRowKey(cursor))
-		}
-		resources, page, err := c.iot.SpaceResources(ctx, ownerSpace, cloud.Subtree, opts...)
-		if err != nil {
-			return fmt.Errorf("verify device ownership: %w", err)
-		}
-		for _, resource := range resources {
-			if resource.Type == cloud.ResourceDevice && resource.ID == deviceID {
-				return nil
-			}
-		}
-		if len(resources) == 0 || page.LastRowKey == 0 || page.LastRowKey == cursor {
-			return ErrDeviceNotOwned
-		}
-		cursor = page.LastRowKey
-	}
-	return fmt.Errorf("verify device ownership: space %s did not end after %d pages", ownerSpace, deviceGuardMaxPages)
-}

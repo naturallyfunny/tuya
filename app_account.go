@@ -57,39 +57,34 @@ func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]clo
 	return devices, nil
 }
 
-func (c *AppAccountClient) DeviceStatus(ctx context.Context, owner, deviceID string) ([]cloud.DataPoint, error) {
+// HasDevice reports whether deviceID is listed under the Tuya account linked to
+// owner. It is the app-account half of the only question this library is in a
+// position to answer, since it alone holds the owner -> UID mapping.
+//
+// It is a fact, not a verdict. A false is not automatically a refusal: a
+// consumer that shares devices between accounts will see false for a device its
+// own rules allow, and is expected to consult those rules next. Acting on the
+// answer is the caller's job — this package never blocks a device call on it.
+//
+// The cost is one request to Tuya, flat regardless of how many devices the
+// account holds. Nothing is cached: invalidation would need to know when a
+// device is added, removed or re-linked, and Tuya reports none of those.
+// A caller that does know is better placed to cache this than the library is.
+func (c *AppAccountClient) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
 	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
-		return nil, err
-	}
-	return c.iot.DeviceStatus(ctx, deviceID)
-}
-
-func (c *AppAccountClient) SendCommands(ctx context.Context, owner, deviceID string, cmds []cloud.DataPoint) error {
-	acc, err := c.store.Get(ctx, owner)
+	devices, err := c.iot.ListDevices(ctx, acc.TuyaUID)
 	if err != nil {
-		return err
-	}
-	if err := c.assertOwned(ctx, acc.TuyaUID, deviceID); err != nil {
-		return err
-	}
-	return c.iot.SendCommands(ctx, deviceID, cmds)
-}
-
-func (c *AppAccountClient) assertOwned(ctx context.Context, tuyaUID, deviceID string) error {
-	devices, err := c.iot.ListDevices(ctx, tuyaUID)
-	if err != nil {
-		return fmt.Errorf("verify device ownership: %w", err)
+		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
 	}
 	for _, d := range devices {
 		if d.ID == deviceID {
-			return nil
+			return true, nil
 		}
 	}
-	return ErrDeviceNotOwned
+	return false, nil
 }
 
 func isMultiGang(category string) bool {

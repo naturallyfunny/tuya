@@ -31,20 +31,13 @@ func (f *fakeStore) Unlink(context.Context, string) error {
 }
 
 type fakeIoT struct {
-	devices      []cloud.Device
-	status       []cloud.DataPoint
-	channels     map[string][]cloud.Channel
-	listErr      error
-	statusErr    error
-	sendErr      error
-	channelErr   error
-	mu           sync.Mutex
-	listUIDs     []string
-	channelIDs   []string
-	statusCalled bool
-	sendCalled   bool
-	sentDeviceID string
-	sentCmds     []cloud.DataPoint
+	devices    []cloud.Device
+	channels   map[string][]cloud.Channel
+	listErr    error
+	channelErr error
+	mu         sync.Mutex
+	listUIDs   []string
+	channelIDs []string
 }
 
 func (f *fakeIoT) ListDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
@@ -65,18 +58,6 @@ func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]clou
 }
 
 func (f *fakeIoT) listCalled() bool { return len(f.listUIDs) > 0 }
-
-func (f *fakeIoT) DeviceStatus(_ context.Context, _ string) ([]cloud.DataPoint, error) {
-	f.statusCalled = true
-	return f.status, f.statusErr
-}
-
-func (f *fakeIoT) SendCommands(_ context.Context, deviceID string, cmds []cloud.DataPoint) error {
-	f.sendCalled = true
-	f.sentDeviceID = deviceID
-	f.sentCmds = cmds
-	return f.sendErr
-}
 
 func linkedAccount() tuya.AppAccount {
 	return tuya.AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
@@ -173,94 +154,65 @@ func TestListDevicesAccountNotLinked(t *testing.T) {
 	}
 }
 
-func TestDeviceStatusOwned(t *testing.T) {
-	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: ownedDevices(), status: []cloud.DataPoint{{Code: "switch_1", Value: true}}}
-	c := tuya.NewAppAccountClient(iot, store)
-	got, err := c.DeviceStatus(context.Background(), "owner-1", "dev-1")
-	if err != nil {
-		t.Fatalf("DeviceStatus: unexpected error: %v", err)
-	}
-	if len(got) != 1 || got[0].Code != "switch_1" {
-		t.Fatalf("DeviceStatus: got %+v, want switch_1", got)
-	}
-	if len(iot.listUIDs) != 1 || iot.listUIDs[0] != "uid-1" {
-		t.Errorf("guard listed uids %v, want one call with uid-1", iot.listUIDs)
-	}
-	if len(iot.channelIDs) != 0 {
-		t.Errorf("guard requested channel names for %v, want none", iot.channelIDs)
-	}
-}
-
-func TestDeviceStatusNotOwned(t *testing.T) {
-	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []cloud.Device{{ID: "someone-elses-device"}}}
-	c := tuya.NewAppAccountClient(iot, store)
-	_, err := c.DeviceStatus(context.Background(), "owner-1", "dev-1")
-	if !errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Fatalf("DeviceStatus: got %v, want ErrDeviceNotOwned", err)
-	}
-	if iot.statusCalled {
-		t.Error("DeviceStatus read status despite failed ownership check")
-	}
-}
-
-func TestSendCommandsOwned(t *testing.T) {
+func TestHasDevice(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{devices: ownedDevices()}
 	c := tuya.NewAppAccountClient(iot, store)
-	cmds := []cloud.DataPoint{{Code: "switch_1", Value: false}}
-	if err := c.SendCommands(context.Background(), "owner-1", "dev-1", cmds); err != nil {
-		t.Fatalf("SendCommands: unexpected error: %v", err)
+	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
+	if err != nil {
+		t.Fatalf("HasDevice: unexpected error: %v", err)
 	}
-	if !iot.sendCalled || iot.sentDeviceID != "dev-1" {
-		t.Fatalf("SendCommands not delegated correctly: called=%v device=%q", iot.sendCalled, iot.sentDeviceID)
+	if !ok {
+		t.Error("HasDevice: got false for a device the account lists")
 	}
-	if len(iot.sentCmds) != 1 || iot.sentCmds[0].Code != "switch_1" {
-		t.Fatalf("SendCommands passed %+v, want switch_1", iot.sentCmds)
+	if len(iot.listUIDs) != 1 || iot.listUIDs[0] != "uid-1" {
+		t.Errorf("HasDevice listed uids %v, want one call with uid-1", iot.listUIDs)
+	}
+	if len(iot.channelIDs) != 0 {
+		t.Errorf("HasDevice requested channel names for %v, want none: it needs identity, not labels", iot.channelIDs)
 	}
 }
 
-func TestSendCommandsNotOwned(t *testing.T) {
+// A device the account does not list is reported as a plain false, not an error.
+// That answer is a fact for the caller to weigh — a consumer sharing devices
+// across accounts will see false for a device its own rules allow.
+func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{devices: []cloud.Device{{ID: "someone-elses-device"}}}
 	c := tuya.NewAppAccountClient(iot, store)
-	err := c.SendCommands(context.Background(), "owner-1", "dev-1", nil)
-	if !errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Fatalf("SendCommands: got %v, want ErrDeviceNotOwned", err)
+	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
+	if err != nil {
+		t.Fatalf("HasDevice: got error %v, want a plain false", err)
 	}
-	if iot.sendCalled {
-		t.Error("SendCommands sent commands despite failed ownership check")
+	if ok {
+		t.Error("HasDevice: got true for a device the account does not list")
 	}
 }
 
-func TestSendCommandsAccountNotLinked(t *testing.T) {
+func TestHasDeviceAccountNotLinked(t *testing.T) {
 	store := &fakeStore{err: tuya.ErrAccountNotLinked}
 	iot := &fakeIoT{}
 	c := tuya.NewAppAccountClient(iot, store)
-	err := c.SendCommands(context.Background(), "owner-1", "dev-1", nil)
-	if !errors.Is(err, tuya.ErrAccountNotLinked) {
-		t.Fatalf("SendCommands: got %v, want ErrAccountNotLinked", err)
+	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, tuya.ErrAccountNotLinked) {
+		t.Fatalf("HasDevice: got %v, want ErrAccountNotLinked", err)
 	}
-	if iot.sendCalled {
-		t.Error("SendCommands delegated despite unlinked account")
+	if iot.listCalled() {
+		t.Error("HasDevice listed devices despite an unlinked account")
 	}
 }
 
-func TestAssertOwnedSurfacesListError(t *testing.T) {
+// A lookup that failed must not read as "the account does not have it".
+func TestHasDeviceSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{listErr: sentinel}
 	c := tuya.NewAppAccountClient(iot, store)
-	_, err := c.DeviceStatus(context.Background(), "owner-1", "dev-1")
+	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("DeviceStatus: got %v, want wrapped sentinel", err)
+		t.Fatalf("HasDevice: got %v, want wrapped sentinel", err)
 	}
-	if errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Error("a failed lookup was reported as ErrDeviceNotOwned")
-	}
-	if iot.statusCalled {
-		t.Error("DeviceStatus read status despite a failed ownership check")
+	if ok {
+		t.Error("HasDevice: got true alongside an error")
 	}
 }
 

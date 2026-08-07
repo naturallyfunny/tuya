@@ -3,51 +3,80 @@
 Module Go `go.naturallyfunny.dev/tuya` — reusable public library untuk integrasi Tuya Cloud OpenAPI.
 Dirancang interface-based agar dapat dipakai lintas project, tidak terikat ke satu database atau satu aplikasi.
 
-## Tujuan Pemakaian
+## Ruang Lingkup
 
-Library ini dipakai sebagai **tool yang dipanggil oleh AI agent**, bukan backend high-throughput.
-Pola traffic-nya: panggilan sporadik, satu aksi per intent user (list device, baca status, kirim command),
-volume rendah. Beberapa keputusan (ownership check via list-then-contains, token in-memory, collect-all
-error) mengoptimalkan untuk pola ini, bukan untuk throughput tinggi — rasionalnya ada di "Design Decisions"
-dan di README (section "Design rationale"). Sebelum menukar sebuah keputusan dengan idiom generik ("prefer X"),
-cek dulu apakah ia mengubah semantik atau bertabrakan dengan kendala domain (signing wajib hash full-body,
-retry me-replay body, collect-all error).
+Library ini **agnostic terhadap consumer**. Ia tidak tahu dan tidak boleh peduli dipakai untuk
+apa — backend HTTP, worker batch, CLI, tool agent, semuanya sama saja. Tidak ada keputusan di
+sini yang boleh bersandar pada tebakan siapa pemanggilnya atau seberapa sering ia memanggil.
+
+Tugasnya satu: **memetakan sistem identitas developer (`owner`) ke identifier milik Tuya**
+(Tuya UID, space ID, device ID). Tuya tidak kenal user consumer; library ini yang memegang
+jembatannya, dan karena itu ia satu-satunya yang bisa menjawab pertanyaan seperti "device ini
+ada di bawah identitas Tuya milik owner?".
+
+**Ia menjawab, ia tidak memutuskan.** Tidak ada pintu di sini yang menolak sebuah device karena
+tampak bukan milik owner. Alasannya bukan kelonggaran, tapi karena "bukan miliknya" tidak selalu
+berarti salah: consumer yang membangun fitur share device memang menjangkau lintas akun, dan
+guard wajib akan **memblokir consumer yang benar demi mengasuh yang ceroboh**. Kepemilikan
+disajikan sebagai pertanyaan (`AppAccountClient.HasDevice`, `SpaceClient.ContainsSpace`,
+`SpaceClient.ContainsDevice`) yang consumer olah dengan aturannya sendiri. Device ID yang datang
+dari sumber ngawur adalah keputusan produk consumer, bukan urusan library.
+
+Sisanya dibentuk oleh **kendala API Tuya** — signing wajib hash full-body, retry me-replay body,
+query wajib urut ASCII, tidak ada lookup device→space. Ini fakta, bukan preferensi. Turunannya
+satu aturan: **library menjawab pertanyaan identitas kalau Tuya memberi primitifnya; kalau tidak,
+ia tidak mengarang satu dengan brute force lalu menagihkannya diam-diam.** `HasDevice` punya
+primitif (`ListDevices`, satu request). `ContainsSpace` punya (`SpaceContains`, satu request).
+`ContainsDevice` tidak punya — makanya ia method tersendiri yang biayanya ditulis, bukan guard
+yang jalan diam-diam di tiap perintah.
+
+Konsekuensi yang mudah dilanggar: **biaya sebuah operasi adalah fakta yang harus ditulis, bukan
+dibenarkan oleh asumsi "toh jarang dipanggil".** Kalau sebuah guard mahal, dokumentasikan
+berapa mahal dan beri consumer jalan menguranginya — jangan menyimpulkan mahalnya tidak
+apa-apa. Consumer yang memanggil ribuan kali per menit sama sahnya dengan yang memanggil
+sekali per menit.
+
+Sebelum menukar sebuah keputusan dengan idiom generik ("prefer X"), cek dulu apakah ia mengubah
+semantik atau bertabrakan dengan dua hal di atas (mis. collect-all error vs fail-fast errgroup).
 
 ## Struktur
 
-Root dipecah **per pintu**, bukan per jenis deklarasi. Yang membedakan dua pintu itu
-adalah guard-nya — bagian paling berisiko di library ini — jadi ia harus terbaca dalam satu
-file, bukan dirakit dari file tipe + file perilaku.
+Root dipecah **per pintu**, bukan per jenis deklarasi. Sekali ada dua pintu, seam "tipe vs
+perilaku" berhenti berguna karena tiap pintu punya keduanya; yang benar-benar berbeda adalah
+cara tiap pintu memetakan owner ke identifier Tuya. Itu harus terbaca dalam satu file.
 
 ```
-iot.go         (root, package tuya) Yang dipakai semua pintu: package doc, interface IoT
-               (di-satisfy *cloud.IoT), ErrDeviceNotOwned. Tidak ada pintu di sini.
+iot.go         (root, package tuya) Yang dipakai semua pintu: package doc (menyatakan library
+               ini pemeta identitas dan bahwa ia menjawab, bukan memutuskan) + interface IoT
+               (di-satisfy *cloud.IoT; cuma ListDevices + DeviceChannelNames — pintu
+               app-account tidak lagi menyentuh device-addressed endpoint). Tidak ada pintu
+               di sini.
 app_account.go (root) Pintu app-account, utuh: AppAccount, ErrAccountNotLinked,
                AppAccountStore interface, struct AppAccountClient + NewAppAccountClient
                + Account() (receiver sudah bilang "App", method tidak mengulang), lalu
-               operasi device-nya: ListDevices (resolve owner → list → resolveChannelNames),
-               DeviceStatus/SendCommands (resolve → assertOwned → delegate), assertOwned
-               (list-then-contains), isMultiGang (heuristik kategori kg/cz*),
-               resolveChannelNames (fan-out concurrent + errors.Join). Semua yang cloud
-               tolak putuskan, diputuskan di sini.
+               ListDevices (resolve owner → list → resolveChannelNames), HasDevice
+               (list-then-contains, mengembalikan bool — jawaban, bukan vonis),
+               isMultiGang (heuristik kategori kg/cz*), resolveChannelNames (fan-out
+               concurrent + errors.Join).
 app_account_test.go
                (package tuya_test) unit test AppAccountClient lewat fake IoT + fake
-               AppAccountStore: happy path + ErrAccountNotLinked / ErrDeviceNotOwned,
-               short-circuit guard, resolusi channel-name, dan bukti guard tidak ikut
-               menembak multiple-names.
+               AppAccountStore: happy path + ErrAccountNotLinked, resolusi channel-name,
+               HasDevice (device asing = false polos bukan error, error listing tidak
+               menyamar jadi false), dan bukti HasDevice tidak ikut menembak multiple-names.
 space.go       (root) Pintu spatial, utuh: Space, ErrSpaceNotLinked, ErrSpaceNotOwned,
                ErrOwnerSpaceProtected, interface SpaceStore + SpaceIoT, struct SpaceClient +
-               NewSpaceClient + SpaceOf(), lalu operasinya: CreateSpace/Space/ModifySpace/
-               DeleteSpace/ChildSpaces/SpaceResources (resolve owner → assertSpaceOwned →
-               delegate) dan DeviceStatus/SendCommands (resolve → assertDeviceOwned →
-               delegate). Dua guard karena dua biaya: assertSpaceOwned satu request
-               (SpaceContains), assertDeviceOwned menelusuri resource seluruh subtree
-               berhalaman dan berbatas. ID space 0 selalu berarti space milik owner,
-               tidak pernah top level project.
+               NewSpaceClient + SpaceOf(), lalu operasi space-nya: CreateSpace/Space/
+               ModifySpace/DeleteSpace/ChildSpaces/SpaceResources (resolve owner →
+               assertSpaceOwned → delegate), plus dua penjawab publik: ContainsSpace
+               (satu request, SpaceContains) dan ContainsDevice (scan resource seluruh
+               subtree, berhalaman dan berbatas — deviceScanPageSize/deviceScanMaxPages).
+               ID space 0 selalu berarti space milik owner, tidak pernah top level project.
 space_test.go  (package tuya_test) unit test SpaceClient lewat fake SpaceIoT + fake
-               SpaceStore: guard space & device, short-circuit sebelum operasi jalan,
-               ID 0 = space owner (tanpa nanya Tuya), space owner tidak bisa dihapus,
-               dan bukti walk device berhenti — cursor macet maupun cursor yang terus maju.
+               SpaceStore: guard space + short-circuit sebelum operasi jalan, ID 0 = space
+               owner (tanpa nanya Tuya), space owner tidak bisa dihapus, ContainsSpace/
+               ContainsDevice mengembalikan false polos untuk yang di luar, dan bukti scan
+               device berhenti — cursor macet maupun cursor yang terus maju (yang terakhir
+               error, bukan false).
 cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. Sebagian besar
                device-addressed; hanya ListDevices yang butuh Tuya UID.
   client.go    cloud.Client (transport: token cache/refresh app-level, HMAC-SHA256 signing, Do
@@ -102,8 +131,8 @@ Dependency direction acyclic: **postgres → tuya → cloud**.
 
 Tiga tier yang dirangkai consumer: `cloud.Client` (transport), `cloud.IoT` (facade
 operasi domain berbasis device/uid/space), dan dua pintu owner-scoped di root yang memegang
-ownership guard — `tuya.AppAccountClient` dan `tuya.SpaceClient`. Untuk agent, pakai salah
-satu pintu root; yang mana tergantung model device-nya.
+ownership guard — `tuya.AppAccountClient` dan `tuya.SpaceClient`. Kalau pemanggilnya menyebut
+owner, pakai salah satu pintu root; yang mana tergantung model device-nya.
 
 Namanya menyebut **model device Tuya**, bukan sekadar verbose. Tuya punya dua: app-account
 (tiap manusia punya akun app sendiri, di-link ke cloud project, batasnya Tuya UID, butuh
@@ -126,19 +155,25 @@ transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com"
 iot := cloud.NewIoT(transport)
 client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
 
-// Semua resolve owner→uid + ownership guard ditangani tuya.AppAccountClient
+// Resolve owner→uid + channel-name ditangani tuya.AppAccountClient
 devices, err := client.ListDevices(ctx, owner)
-status, err := client.DeviceStatus(ctx, owner, deviceID)
-err = client.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
+
+// Kepemilikan itu pertanyaan. Consumer yang memutuskan artinya.
+ok, err := client.HasDevice(ctx, owner, deviceID)
+if !ok && !myShareRules.Allow(owner, deviceID) {
+    return ErrForbidden // punya consumer, bukan punya library
+}
+err = iot.SendCommands(ctx, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
-`cloud.IoT` bisa dipakai langsung jika consumer sudah pegang tuyaUID dan tidak butuh
-ownership guard (trusted context). `DeviceStatus`/`SendCommands` device-addressed — tidak butuh uid.
+Perintah device dikirim lewat `cloud.IoT` — ia device-addressed dan tidak butuh uid, jadi tidak
+ada yang bisa diresolusi pintu root di situ. Kalau consumer memang tidak butuh scoping owner
+sama sekali (trusted context), `cloud.IoT` dipakai langsung tanpa pintu:
 
 ```go
 acc, err := store.Get(ctx, owner)
 devices, err := iot.ListDevices(ctx, acc.TuyaUID) // uid-addressed
-status, err := iot.DeviceStatus(ctx, deviceID)    // device-addressed, tanpa ownership guard
+status, err := iot.DeviceStatus(ctx, deviceID)    // device-addressed
 ```
 
 Pintu spatial dirangkai sama persis, cuma store-nya beda. Tiap owner di-link ke satu space;
@@ -155,8 +190,10 @@ rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren)
 room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "")
 things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree)
 
-// device-nya dijaga assertDeviceOwned (telusur subtree), bukan SpaceContains
-err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
+// ContainsDevice men-scan subtree — mahal, jadi ia method tersendiri yang consumer
+// panggil sadar, bukan guard yang jalan diam-diam di tiap perintah
+ok, err := hotel.ContainsDevice(ctx, owner, deviceID)
+err = iot.SendCommands(ctx, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
 ## Region
@@ -187,33 +224,43 @@ Jangan pernah edit migration yang sudah di-commit.
   cleanup tapi diam-diam mematikan retry: jalur reaktif akan return nil tanpa melakukan apa pun,
   lalu request diulang dengan token yang barusan ditolak. Ada test di `cloud/client_test.go`
   yang menjaga ini (dan sudah diverifikasi gagal pada perilaku lama).
-- **Layout: pintu owner-scoped di root, layer Tuya murni di `cloud/`.** Library ini "tool dipanggil
-  AI agent", jadi surface utama = pintu agent (`tuya.AppAccountClient`) dan ia hidup di root. Layer trusted
+- **Layout: pintu owner-scoped di root, layer Tuya murni di `cloud/`.** Yang di root adalah yang
+  memegang konsep owner — konsep milik library ini, bukan milik Tuya. Layer trusted
   device-addressed (`cloud.Client`/`cloud.IoT`) didemot ke subpackage `cloud`. Ini mengikuti
   pola sibling `go.naturallyfunny.dev/spotify` (Client owner-keyed di root, inner client resolved
   disembunyikan). Tuya *berhak* mengekspos `cloud` standalone karena token project-level membuatnya
   berguna di trusted context tanpa user (beda dgn spotify yang per-user token wajib).
-- **Ownership guard hidup di root, bukan `cloud.IoT`.** `cloud.IoT` adalah
-  trusted, device-addressed layer tanpa owner check — caller yang memegangnya bisa mengakses device
-  manapun dalam project. `tuya.AppAccountClient` adalah pintu tunggal untuk agent: setiap call melaluinya
-  harus resolve owner lebih dulu, dan ownership diverifikasi di `assertOwned` (lean, tanpa
-  enrichment) sebelum command diteruskan. Guard ini *lebih kuat* di root: tidak bisa di-bypass
-  tanpa melewati pintu itu.
+- **Pintu root menjawab kepemilikan, tidak menegakkannya.** Ini pernah sebaliknya: `DeviceStatus`/
+  `SendCommands` ada di kedua pintu dan menolak device yang tidak lolos guard. Dibongkar Agustus
+  2026 karena tiga hal. **(a)** Guard wajib memblokir consumer yang benar — fitur share device
+  lintas akun itu sah, dan device yang di-share memang tidak ada di listing owner; consumer itu
+  jadi terpaksa turun ke `cloud.IoT` dan sekalian kehilangan resolusi owner, satu-satunya hal
+  yang ia butuh dari library. **(b)** Device ID yang datang dari sumber ngawur adalah keputusan
+  produk consumer; library tidak perlu mengasuhnya. **(c)** Setelah guard-nya dicabut, `owner` di
+  method device-addressed tidak meresolusi apa pun — jadi method-nya ikut dicabut, bukan
+  dipertahankan dengan parameter yang diam. Sekarang: `HasDevice`/`ContainsSpace`/`ContainsDevice`
+  mengembalikan `bool`, consumer merangkai kebijakannya sendiri, perintah device lewat `cloud.IoT`.
+  Kalau nanti tergoda menambahkan lagi "pintu yang aman", ingat bahwa yang dibeli bukan keamanan
+  melainkan larangan buat consumer yang use case-nya tidak kita bayangkan.
 - **`cloud.IoT` = satu method, satu endpoint. Aturan keras.** Kalau sebuah method tidak bisa
   ditunjuk ke tepat satu endpoint Tuya, dia sedang menyusun perilaku, dan penyusunan itu milik
   pemanggil yang menginginkannya. Dua hal pernah melanggar ini dan sudah dipindah ke root:
-  `HasDevice` (lahir khusus untuk melayani `assertOwned` — layer bawah dibentuk kebutuhan layer
-  atas) dan `enrichDevices` (menyimpan heuristik kategori `kg`/`cz*`, yaitu opini tentang
+  `cloud.HasDevice` (lahir khusus untuk melayani guard di root — layer bawah dibentuk kebutuhan
+  layer atas; nama itu kini dipakai di root, tempat pemetaan owner memang hidup) dan
+  `enrichDevices` (menyimpan heuristik kategori `kg`/`cz*`, yaitu opini tentang
   katalog Tuya, bukan fakta yang dinyatakan API-nya). Kalau nanti tergoda menambah `HasX` atau
   sebuah "list yang sekalian di-enrich" di `cloud`, itu tanda komposisinya yang harus dibangun
   di root dari primitif yang sudah ada.
   Batasnya berlaku untuk **`IoT`**, bukan `cloud.Client`: transport tetap boleh punya kebijakan
   (refresh token, retry-on-1010) karena itu kebenaran protokol, bukan komposisi domain.
-- **Ownership check via list-then-contains, logikanya di root.** `tuya.AppAccountClient.assertOwned`
-  memanggil `cloud.IoT.ListDevices(ctx, uid)` lalu meng-cek keanggotaan sendiri. Aman & sederhana
-  untuk traffic rendah; caching ditunda sampai ada kebutuhan throughput nyata. Guard sengaja tidak
-  memanggil `DeviceChannelNames` — dia butuh identitas, bukan label, dan label akan menambah satu
-  request per device multi-gang di *setiap* call terjaga. Ada test yang menjaga ini.
+- **`HasDevice` via list-then-contains, logikanya di root.** Ia memanggil
+  `cloud.IoT.ListDevices(ctx, uid)` lalu meng-cek keanggotaan sendiri. Biayanya **satu request,
+  flat** berapa pun jumlah device. Tidak di-cache: invalidasi butuh tahu kapan device ditambah,
+  dicabut, atau di-relink, dan Tuya tidak mengabari satu pun dari itu — consumer yang tahu jauh
+  lebih pantas nge-cache daripada library. `HasDevice` sengaja tidak memanggil
+  `DeviceChannelNames` — dia butuh identitas, bukan label. Ada test yang menjaga ini.
+  Device yang tidak ada di listing = `false` polos, **bukan** error; error hanya untuk lookup yang
+  gagal, supaya "tidak ketemu" dan "tidak bisa mencari" tidak jadi jawaban yang sama.
 - **Resolusi channel-name hidup di root** (`resolveChannelNames` + `isMultiGang` di
   app_account.go). Root `ListDevices` selalu me-resolve karena hasilnya dibaca manusia (butuh
   "Kitchen light", bukan "switch_1"); consumer yang memakai `cloud.IoT` langsung menyusun
@@ -222,11 +269,11 @@ Jangan pernah edit migration yang sudah di-commit.
   file domainnya (cloud/device.go; nanti cloud/home.go, cloud/space.go), struct `IoT` +
   `NewIoT` di cloud/client.go. Root **tidak** mengikuti pola itu: sekali ada dua pintu,
   seam "tipe vs perilaku" berhenti berguna karena tiap pintu punya keduanya, dan
-  yang benar-benar berbeda adalah guard-nya. Jadi satu file per pintu (app_account.go; nanti
-  space.go), dengan iot.go hanya memegang yang dipakai bersama. Orang yang mengaudit
-  ownership membaca satu file. `postgres/` dan `firestore/` ikut aturan yang sama — makanya
-  `app_account.go`, bukan `store.go`.
-- **`ErrDeviceNotOwned` dan `ErrAccountNotLinked` hidup di root `tuya`.** Keduanya adalah konsep
+  yang benar-benar berbeda adalah cara tiap pintu memetakan owner. Jadi satu file per pintu
+  (app_account.go, space.go), dengan iot.go hanya memegang yang dipakai bersama. Orang yang
+  menelusuri kepemilikan membaca satu file. `postgres/` dan `firestore/` ikut aturan yang sama —
+  makanya `app_account.go`, bukan `store.go`.
+- **`ErrAccountNotLinked` dan kerabat space-nya hidup di root `tuya`.** Semuanya konsep
   owner-scoping, bukan konsep Tuya API — tempatnya di layer yang memiliki owner.
 
 - **Nama hanya boleh memuat kata yang kodenya sendiri cek atau lakukan.** Library ini tidak
@@ -240,25 +287,28 @@ Jangan pernah edit migration yang sudah di-commit.
   tidak pernah di identifier, nama tabel, atau nama kolom. Tes untuk nama baru: adakah kode
   yang mengecek klaim yang dibawa nama itu?
 - **Empat concern dipisah dengan jelas.** `cloud.Client` transport; `cloud.IoT` device-addressed
-  Tuya facade; `tuya.AppAccountClient` owner-scoped facade dengan ownership guard;
+  Tuya facade; `tuya.AppAccountClient` pemetaan owner→uid + penjawab kepemilikan;
   `postgres.AppAccountStore` account mapping.
   Interface `AppAccountStore` dan `IoT` didefinisikan di root `tuya` (consumer), bukan di implementor —
   sesuai idiom Go "accept interfaces, return structs".
 - **`cloud.Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Tidak ada
-  ownership guard di sini — `Do` melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis.
-  agent) adalah tanggung jawab consumer.
-- **Pintu spatial punya dua guard, karena biayanya dua kelas berbeda.** Menjaga *space*
-  (`assertSpaceOwned`) cukup satu request: `SpaceContains(root, target)` — dan karena containment
-  transitif, ia sekaligus menyelesaikan cascade pada delete (kalau `target` di dalam space owner, seluruh
-  turunannya juga). Menjaga *device* (`assertDeviceOwned`) mahal: Tuya tidak punya endpoint "space
-  mana yang memuat device ini" (sudah dicek: `GET /v2.0/cloud/thing/{device_id}` tidak membawa
-  space/asset id sama sekali), jadi satu-satunya jalan adalah menelusuri resource seluruh subtree
-  berhalaman. Asimetri ini disengaja dan tidak bisa dihilangkan dari sisi kita.
-- **Device guard tetap hidup di library, bukan diserahkan ke consumer.** Alternatifnya pernah
-  ditimbang: consumer yang sudah memirror struktur properti di databasenya bisa menjawab
-  kepemilikan dengan satu query lokal, lebih murah. Tapi tanpa `DeviceStatus`/`SendCommands` di
-  `SpaceClient`, agent yang cuma mau menyalakan lampu harus dipegangi `cloud.IoT` yang tanpa guard —
-  persis yang README larang. Pintu yang tidak bisa menyalakan lampu bukan pintu.
+  ownership guard di sini — `Do` melewatinya. Kepada siapa `Do` boleh dipegangkan adalah
+  keputusan consumer.
+- **Operasi space tetap menolak space di luar jangkauan owner — dan itu bukan pengecualian dari
+  "menjawab, bukan memutuskan".** ID yang diterima method-method itu *owner-relative by
+  construction*: 0 berarti space owner, dan pintu ini memang tidak punya cara mengekspresikan
+  operasi atas space orang lain. Guard-nya (`assertSpaceOwned`) satu request lewat `SpaceContains`,
+  dan karena containment transitif ia sekaligus menyelesaikan cascade pada delete. Consumer yang
+  punya aturan sendiri tetap bisa bertanya duluan lewat `ContainsSpace`, atau memakai `cloud.IoT`
+  yang tanpa konsep owner.
+- **Biaya `ContainsDevice` harus disebut angkanya, bukan diredakan.** Berhenti di match pertama,
+  jadi kasus beruntung satu request; batas atasnya `deviceScanPageSize` × `deviceScanMaxPages`
+  = 200 × 50 resource, dan halaman yang memuat device-nya tidak dijamin halaman pertama. Yang
+  penting: biaya ini **tumbuh seiring besarnya subtree**, beda kelas dengan `HasDevice` yang flat.
+  Justru karena mahal ia berupa method yang dipanggil sadar, bukan guard yang jalan diam-diam —
+  consumer yang sudah memirror lokasi device di databasenya menjawab jauh lebih cepat dan memang
+  sebaiknya begitu. Menyerah karena kena cap = **error**, bukan `false`: "tidak ketemu" dan
+  "berhenti mencari" tidak boleh jadi jawaban yang sama buat consumer yang memutuskan di atasnya.
 - **`Scope` argumen wajib, bukan option.** `only_sub` menentukan kedalaman listing, dan default
   Tuya untuknya tidak terdokumentasi. Listing yang diam-diam salah kedalaman adalah bahan baku
   guard yang salah, jadi pemanggil harus menyebut `cloud.DirectChildren` atau `cloud.Subtree`;
@@ -292,10 +342,14 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
 - **`resolveChannelNames` (root) pakai `sync.WaitGroup.Go` + `errors.Join`, bukan `errgroup`** — semantiknya collect-all
   (kumpulkan semua error device), sedang `errgroup.WithContext` fail-fast (batalkan saat error pertama).
   Kontrak berbeda; errgroup di sini adalah perubahan perilaku, bukan cleanup.
-- **Sejarah: ownership guard sudah pindah ke root sejak refactor Juni 2026.** `cloud.IoT.DeviceStatus`/
-  `SendCommands` kini device-addressed murni tanpa `tuyaUID` dan tanpa ownership check; guard hidup di
-  `assertOwned` di root (kini `app_account.go`). Kalau menelusuri ownership,
-  mulai dari root, bukan `cloud`.
+- **Sejarah: guard kepemilikan device dihapus seluruhnya, Agustus 2026.** Jalurnya panjang:
+  Juni 2026 ia dipindah dari `cloud` ke root (`assertOwned`), Agustus 2026 pintu spatial datang
+  membawa `assertDeviceOwned`, lalu keduanya dibongkar bersama `DeviceStatus`/`SendCommands` di
+  kedua pintu root. Penggantinya `HasDevice`/`ContainsSpace`/`ContainsDevice` yang mengembalikan
+  `bool`. Alasan lengkapnya di Design Decisions ("Pintu root menjawab kepemilikan, tidak
+  menegakkannya"); ringkasnya, guard wajib memblokir consumer yang benar (share device lintas
+  akun) demi mengasuh yang ceroboh. Kalau menemukan referensi ke `tuya.ErrDeviceNotOwned` atau
+  `SpaceClient.SendCommands` di luar repo ini, itu sisa versi sebelum v0.8.0.
 - **Sejarah: `cloud.IoT` dibersihkan jadi 1:1-dengan-endpoint pada Agustus 2026.** `HasDevice`
   dihapus (guard-nya jadi list-then-contains di root) dan `enrichDevices` dipindah ke root
   sebagai `resolveChannelNames`; `listDevices` yang private dipromosikan jadi `ListDevices`, dan
@@ -338,7 +392,7 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
      masking. `SpaceID` tetap menerima keduanya (murah, satu method) tapi sekarang jelas mana
      yang normal.
   4. **Halaman terakhir = `data: []` dan field `last_row_key` hilang sama sekali** (jadi
-     ter-decode 0). `assertDeviceOwned` berhenti di situ, plus cursor macet, plus cap.
+     ter-decode 0). `ContainsDevice` berhenti di situ, plus cursor macet, plus cap.
   5. **`relation` transitif** — `relation(root, cucu) = true`. Guard `assertSpaceOwned` sah.
 - **Dua sifat `relation` yang tidak ada di doc dan mengubah kode.** `relation(X, X)` menjawab
   **false**: sebuah space bukan turunan dirinya sendiri. Jadi short-circuit `target == root` di
@@ -362,7 +416,8 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
 - `tuya.NewAppAccountClient(iot, store)` mengembalikan `*tuya.AppAccountClient` (root, pintu owner-scoped model app-account); `iot` diterima sebagai interface `tuya.IoT`
 - `tuya.NewSpaceClient(iot, store)` mengembalikan `*tuya.SpaceClient` (root, pintu owner-scoped model spatial); `iot` diterima sebagai interface `tuya.SpaceIoT`
 - Nama pintu & store = nama model device Tuya: `AppAccountClient`/`AppAccountStore` dan `SpaceClient`/`SpaceStore`. Jangan pakai nama generik `Client` atau `Store`.
-- `AppAccount`, `ErrAccountNotLinked`, interface `AppAccountStore` di `app_account.go`; `Space`, `ErrSpaceNotLinked`, `ErrSpaceNotOwned`, `ErrOwnerSpaceProtected`, interface `SpaceStore` & `SpaceIoT` di `space.go`; `ErrDeviceNotOwned` + interface `IoT` di `iot.go` karena dipakai kedua pintu
+- Penjawab kepemilikan mengembalikan `(bool, error)` dan namanya kata kerja bertanya — `HasDevice`, `ContainsSpace`, `ContainsDevice` — bukan `AssertX` atau `MustX`. Namanya harus menyatakan bahwa ia melaporkan, bukan memvonis. `false` = fakta; `error` hanya untuk pencarian yang gagal
+- `AppAccount`, `ErrAccountNotLinked`, interface `AppAccountStore` di `app_account.go`; `Space`, `ErrSpaceNotLinked`, `ErrSpaceNotOwned`, `ErrOwnerSpaceProtected`, interface `SpaceStore` & `SpaceIoT` di `space.go`; interface `IoT` di `iot.go`
 - `tuya.Space` (baris store: owner + space id) sengaja senama dengan `cloud.Space` (objek space Tuya yang lengkap) — sama seperti `postgres.AppAccountStore` vs `tuya.AppAccountStore`, di kode selalu ada kualifikasi package
 - `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile. `SpaceStore` di kedua package ikut pola yang sama.
 - `postgres.NewAppAccountStore(ctx, db, opts...)` / `postgres.NewSpaceStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`

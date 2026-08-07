@@ -59,9 +59,6 @@ type fakeSpaceIoT struct {
 	listed          cloud.SpaceID
 	resourcesOf     cloud.SpaceID
 	resourceCalls   int
-	statusOf        string
-	sentTo          string
-	sentCmds        []cloud.DataPoint
 }
 
 func (f *fakeSpaceIoT) SpaceContains(_ context.Context, parent, child cloud.SpaceID) (bool, error) {
@@ -108,17 +105,6 @@ func (f *fakeSpaceIoT) SpaceResources(_ context.Context, id cloud.SpaceID, _ clo
 		return f.pages[index].resources, cloud.Page{LastRowKey: f.pages[index].cursor}, nil
 	}
 	return nil, cloud.Page{}, nil
-}
-
-func (f *fakeSpaceIoT) DeviceStatus(_ context.Context, deviceID string) ([]cloud.DataPoint, error) {
-	f.statusOf = deviceID
-	return []cloud.DataPoint{{Code: "switch_1", Value: true}}, nil
-}
-
-func (f *fakeSpaceIoT) SendCommands(_ context.Context, deviceID string, cmds []cloud.DataPoint) error {
-	f.sentTo = deviceID
-	f.sentCmds = cmds
-	return nil
 }
 
 func newSpaceDoor(t *testing.T, iot *fakeSpaceIoT) *tuya.SpaceClient {
@@ -173,65 +159,57 @@ func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 	}
 }
 
-func TestDeviceCallsNeedTheDeviceInTheOwnersSubtree(t *testing.T) {
+func TestContainsDeviceScansTheWholeSubtree(t *testing.T) {
 	lobbyLight := cloud.Resource{ID: "dev-lobby", Type: cloud.ResourceDevice}
 	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{lobbyLight}}}}
 	door := newSpaceDoor(t, iot)
-	ctx := context.Background()
 
-	status, err := door.DeviceStatus(ctx, "owner-1", "dev-lobby")
+	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-lobby")
 	if err != nil {
-		t.Fatalf("DeviceStatus: unexpected error: %v", err)
+		t.Fatalf("ContainsDevice: unexpected error: %v", err)
 	}
-	if len(status) != 1 || iot.statusOf != "dev-lobby" {
-		t.Errorf("read status of %q, want dev-lobby", iot.statusOf)
+	if !ok {
+		t.Error("ContainsDevice: got false for a device in the owner's subtree")
 	}
 	// The subtree, not one room: the device may sit anywhere inside the owner's space.
 	if iot.resourcesOf != ownerSpace {
-		t.Errorf("guard listed space %d, want the owner's space %d", iot.resourcesOf, ownerSpace)
-	}
-
-	iot.resourceCalls = 0
-	if err := door.SendCommands(ctx, "owner-1", "dev-lobby", []cloud.DataPoint{{Code: "switch_1", Value: true}}); err != nil {
-		t.Fatalf("SendCommands: unexpected error: %v", err)
-	}
-	if iot.sentTo != "dev-lobby" || len(iot.sentCmds) != 1 {
-		t.Errorf("sent %d commands to %q, want one to dev-lobby", len(iot.sentCmds), iot.sentTo)
+		t.Errorf("scanned space %d, want the owner's space %d", iot.resourcesOf, ownerSpace)
 	}
 }
 
-func TestDeviceCallsAreRefusedForDevicesElsewhere(t *testing.T) {
+// A device that is not in the subtree is a false, not an error. The door reports;
+// whether that means "refuse" is the caller's rule, and a consumer running device
+// sharing will answer differently from one that is not.
+func TestContainsDeviceAbsentIsFalseNotError(t *testing.T) {
 	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{{ID: "dev-other", Type: cloud.ResourceDevice}}}}}
 	door := newSpaceDoor(t, iot)
-	ctx := context.Background()
 
-	if _, err := door.DeviceStatus(ctx, "owner-1", "dev-foreign"); !errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Errorf("DeviceStatus error = %v, want ErrDeviceNotOwned", err)
+	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-foreign")
+	if err != nil {
+		t.Fatalf("ContainsDevice: got error %v, want a plain false", err)
 	}
-	if err := door.SendCommands(ctx, "owner-1", "dev-foreign", nil); !errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Errorf("SendCommands error = %v, want ErrDeviceNotOwned", err)
-	}
-	if iot.statusOf != "" || iot.sentTo != "" {
-		t.Errorf("a device call ran past the guard: status %q, command %q", iot.statusOf, iot.sentTo)
+	if ok {
+		t.Error("ContainsDevice: got true for a device outside the owner's subtree")
 	}
 }
 
-func TestDeviceGuardWalksPagesUntilItFindsTheDevice(t *testing.T) {
+func TestContainsDeviceReadsPagesUntilItFindsTheDevice(t *testing.T) {
 	iot := &fakeSpaceIoT{pages: []resourcePage{
 		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.ResourceDevice}}, cursor: 42},
 		{resources: []cloud.Resource{{ID: "dev-2", Type: cloud.ResourceDevice}}, cursor: 43},
 	}}
 	door := newSpaceDoor(t, iot)
 
-	if _, err := door.DeviceStatus(context.Background(), "owner-1", "dev-2"); err != nil {
-		t.Fatalf("DeviceStatus: unexpected error: %v", err)
+	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-2")
+	if err != nil || !ok {
+		t.Fatalf("ContainsDevice = %v, %v; want true, nil", ok, err)
 	}
 	if iot.resourceCalls != 2 {
 		t.Errorf("read %d pages, want 2 (the device is on the second)", iot.resourceCalls)
 	}
 }
 
-func TestDeviceGuardStopsOnAStalledCursor(t *testing.T) {
+func TestContainsDeviceStopsOnAStalledCursor(t *testing.T) {
 	// Tuya never documents how a listing ends; a cursor that repeats is one of
 	// the plausible signals, and must not be read as "there is another page".
 	iot := &fakeSpaceIoT{pages: []resourcePage{
@@ -240,26 +218,59 @@ func TestDeviceGuardStopsOnAStalledCursor(t *testing.T) {
 	}}
 	door := newSpaceDoor(t, iot)
 
-	if _, err := door.DeviceStatus(context.Background(), "owner-1", "dev-absent"); !errors.Is(err, tuya.ErrDeviceNotOwned) {
-		t.Errorf("DeviceStatus error = %v, want ErrDeviceNotOwned", err)
+	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-absent")
+	if err != nil || ok {
+		t.Fatalf("ContainsDevice = %v, %v; want false, nil", ok, err)
 	}
 	if iot.resourceCalls != 2 {
 		t.Errorf("read %d pages, want 2 before the cursor stalled", iot.resourceCalls)
 	}
 }
 
-func TestDeviceGuardGivesUpRatherThanPageForever(t *testing.T) {
+func TestContainsDeviceGivesUpRatherThanPageForever(t *testing.T) {
 	iot := &fakeSpaceIoT{endlessPages: true}
 	door := newSpaceDoor(t, iot)
 
-	if _, err := door.DeviceStatus(context.Background(), "owner-1", "dev-absent"); err == nil {
-		t.Fatal("DeviceStatus: got nil error, want the guard to give up")
+	// Giving up is an error, never a false: "not found" and "gave up looking"
+	// must not be the same answer to a caller deciding on it.
+	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-absent")
+	if err == nil {
+		t.Fatal("ContainsDevice: got nil error, want the scan to give up")
+	}
+	if ok {
+		t.Error("ContainsDevice: got true alongside an error")
 	}
 	if iot.resourceCalls > 100 {
-		t.Errorf("read %d pages, want the walk capped", iot.resourceCalls)
+		t.Errorf("read %d pages, want the scan capped", iot.resourceCalls)
 	}
-	if iot.statusOf != "" {
-		t.Errorf("read status of %q after giving up, want none", iot.statusOf)
+}
+
+func TestContainsSpace(t *testing.T) {
+	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{insideRoom: true}}
+	door := newSpaceDoor(t, iot)
+	ctx := context.Background()
+
+	ok, err := door.ContainsSpace(ctx, "owner-1", insideRoom)
+	if err != nil || !ok {
+		t.Fatalf("ContainsSpace(insideRoom) = %v, %v; want true, nil", ok, err)
+	}
+	// A space outside is a false, not ErrSpaceNotOwned: this is the question,
+	// not the refusal.
+	ok, err = door.ContainsSpace(ctx, "owner-1", foreign)
+	if err != nil {
+		t.Fatalf("ContainsSpace(foreign): got error %v, want a plain false", err)
+	}
+	if ok {
+		t.Error("ContainsSpace(foreign) = true, want false")
+	}
+	// Zero still means the owner's own space, and needs no request to answer.
+	before := len(iot.relationQueries)
+	ok, err = door.ContainsSpace(ctx, "owner-1", 0)
+	if err != nil || !ok {
+		t.Fatalf("ContainsSpace(0) = %v, %v; want true, nil", ok, err)
+	}
+	if len(iot.relationQueries) != before {
+		t.Error("ContainsSpace(0) asked Tuya about the owner's own space")
 	}
 }
 
