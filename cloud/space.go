@@ -17,13 +17,13 @@ type Space struct {
 	RootID   int64  `json:"root_id"`
 }
 
-type ResourceType int
+type SpaceResourceType int
 
-const ResourceDevice ResourceType = 0
+const SpaceResourceDevice SpaceResourceType = 0
 
 type Resource struct {
-	ID   string       `json:"res_id"`
-	Type ResourceType `json:"res_type"`
+	ID   string            `json:"res_id"`
+	Type SpaceResourceType `json:"res_type"`
 }
 
 type Page struct {

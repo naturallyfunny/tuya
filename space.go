@@ -146,7 +146,7 @@ func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string
 			return false, fmt.Errorf("scan resources of space %d: %w", ownerSpace, err)
 		}
 		for _, resource := range resources {
-			if resource.Type == cloud.ResourceDevice && resource.ID == deviceID {
+			if resource.Type == cloud.SpaceResourceDevice && resource.ID == deviceID {
 				return true, nil
 			}
 		}

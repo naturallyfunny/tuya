@@ -93,7 +93,7 @@ func (f *fakeSpaceIoT) SpaceResources(_ context.Context, id int64, _ bool, _ clo
 	f.resourcesOf = id
 	f.resourceCalls++
 	if f.endlessPages {
-		return []cloud.Resource{{ID: "someone-elses-device", Type: cloud.ResourceDevice}},
+		return []cloud.Resource{{ID: "someone-elses-device", Type: cloud.SpaceResourceDevice}},
 			cloud.Page{LastRowKey: int64(f.resourceCalls)}, nil
 	}
 	if index := f.resourceCalls - 1; index < len(f.pages) {
@@ -151,7 +151,7 @@ func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 }
 
 func TestContainsDeviceScansTheWholeSubtree(t *testing.T) {
-	lobbyLight := cloud.Resource{ID: "dev-lobby", Type: cloud.ResourceDevice}
+	lobbyLight := cloud.Resource{ID: "dev-lobby", Type: cloud.SpaceResourceDevice}
 	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{lobbyLight}}}}
 	door := newSpaceDoor(t, iot)
 	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-lobby")
@@ -167,7 +167,7 @@ func TestContainsDeviceScansTheWholeSubtree(t *testing.T) {
 }
 
 func TestContainsDeviceAbsentIsFalseNotError(t *testing.T) {
-	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{{ID: "dev-other", Type: cloud.ResourceDevice}}}}}
+	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{{ID: "dev-other", Type: cloud.SpaceResourceDevice}}}}}
 	door := newSpaceDoor(t, iot)
 	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-foreign")
 	if err != nil {
@@ -180,8 +180,8 @@ func TestContainsDeviceAbsentIsFalseNotError(t *testing.T) {
 
 func TestContainsDeviceReadsPagesUntilItFindsTheDevice(t *testing.T) {
 	iot := &fakeSpaceIoT{pages: []resourcePage{
-		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.ResourceDevice}}, cursor: 42},
-		{resources: []cloud.Resource{{ID: "dev-2", Type: cloud.ResourceDevice}}, cursor: 43},
+		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.SpaceResourceDevice}}, cursor: 42},
+		{resources: []cloud.Resource{{ID: "dev-2", Type: cloud.SpaceResourceDevice}}, cursor: 43},
 	}}
 	door := newSpaceDoor(t, iot)
 	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-2")
@@ -195,8 +195,8 @@ func TestContainsDeviceReadsPagesUntilItFindsTheDevice(t *testing.T) {
 
 func TestContainsDeviceStopsOnAStalledCursor(t *testing.T) {
 	iot := &fakeSpaceIoT{pages: []resourcePage{
-		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.ResourceDevice}}, cursor: 42},
-		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.ResourceDevice}}, cursor: 42},
+		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.SpaceResourceDevice}}, cursor: 42},
+		{resources: []cloud.Resource{{ID: "dev-1", Type: cloud.SpaceResourceDevice}}, cursor: 42},
 	}}
 	door := newSpaceDoor(t, iot)
 	ok, err := door.ContainsDevice(context.Background(), "owner-1", "dev-absent")

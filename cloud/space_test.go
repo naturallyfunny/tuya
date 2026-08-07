@@ -99,7 +99,7 @@ func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
-	if len(resources) != 1 || resources[0].ID != "vdevo-1" || resources[0].Type != ResourceDevice {
+	if len(resources) != 1 || resources[0].ID != "vdevo-1" || resources[0].Type != SpaceResourceDevice {
 		t.Errorf("resources = %+v, want one device vdevo-1", resources)
 	}
 	if page.LastRowKey != 2036356138623278 || page.PageSize != 3 {
