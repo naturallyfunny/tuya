@@ -33,9 +33,9 @@ type SpaceIoT interface {
 	Space(ctx context.Context, id cloud.SpaceID) (cloud.Space, error)
 	ModifySpace(ctx context.Context, id cloud.SpaceID, name, description string) error
 	DeleteSpace(ctx context.Context, id cloud.SpaceID) error
-	ChildSpaces(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.SpaceID, cloud.Page, error)
-	SpaceResources(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.Resource, cloud.Page, error)
-	SpaceContains(ctx context.Context, parent, child cloud.SpaceID) (bool, error)
+	ListSpaces(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.SpaceID, cloud.Page, error)
+	SpaceResources(ctx context.Context, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.Resource, cloud.Page, error)
+	SpaceRelation(ctx context.Context, parent, child cloud.SpaceID) (bool, error)
 }
 
 type SpaceClient struct {
@@ -98,7 +98,7 @@ func (c *SpaceClient) DeleteSpace(ctx context.Context, owner string, id cloud.Sp
 	return c.iot.DeleteSpace(ctx, target)
 }
 
-func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.SpaceID, cloud.Page, error) {
+func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.SpaceID, cloud.Page, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return nil, cloud.Page{}, err
@@ -106,10 +106,10 @@ func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id cloud.Sp
 	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return nil, cloud.Page{}, err
 	}
-	return c.iot.ChildSpaces(ctx, target, scope, opts...)
+	return c.iot.ListSpaces(ctx, target, scope, page)
 }
 
-func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, opts ...cloud.PageOption) ([]cloud.Resource, cloud.Page, error) {
+func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.Resource, cloud.Page, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return nil, cloud.Page{}, err
@@ -117,7 +117,7 @@ func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud
 	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return nil, cloud.Page{}, err
 	}
-	return c.iot.SpaceResources(ctx, target, scope, opts...)
+	return c.iot.SpaceResources(ctx, target, scope, page)
 }
 
 func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id cloud.SpaceID) (bool, error) {
@@ -139,13 +139,9 @@ func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string
 	if err != nil {
 		return false, err
 	}
-	var cursor int64
+	page := cloud.Page{PageSize: deviceScanPageSize}
 	for range deviceScanMaxPages {
-		opts := []cloud.PageOption{cloud.WithPageSize(deviceScanPageSize)}
-		if cursor != 0 {
-			opts = append(opts, cloud.WithLastRowKey(cursor))
-		}
-		resources, page, err := c.iot.SpaceResources(ctx, ownerSpace, cloud.Subtree, opts...)
+		resources, next, err := c.iot.SpaceResources(ctx, ownerSpace, cloud.Subtree, page)
 		if err != nil {
 			return false, fmt.Errorf("scan resources of space %s: %w", ownerSpace, err)
 		}
@@ -154,10 +150,10 @@ func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string
 				return true, nil
 			}
 		}
-		if len(resources) == 0 || page.LastRowKey == 0 || page.LastRowKey == cursor {
+		if len(resources) == 0 || next.LastRowKey == 0 || next.LastRowKey == page.LastRowKey {
 			return false, nil
 		}
-		cursor = page.LastRowKey
+		page.LastRowKey = next.LastRowKey
 	}
 	return false, fmt.Errorf("scan resources of space %s: did not end after %d pages", ownerSpace, deviceScanMaxPages)
 }
@@ -188,7 +184,7 @@ func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target c
 	if target == ownerSpace {
 		return nil
 	}
-	contains, err := c.iot.SpaceContains(ctx, ownerSpace, target)
+	contains, err := c.iot.SpaceRelation(ctx, ownerSpace, target)
 	if err != nil {
 		var apiErr *cloud.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == cloud.CodeNoSpacePermission {

@@ -108,7 +108,7 @@ func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
+	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"data":[],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
+	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 
 func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.SpaceResources(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
+	if _, _, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{PageSize: 100, LastRowKey: 5}); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -160,8 +160,8 @@ func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 
 func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.ChildSpaces(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
-		t.Fatalf("ChildSpaces: unexpected error: %v", err)
+	if _, _, err := iot.ListSpaces(context.Background(), 15, Subtree, Page{PageSize: 100, LastRowKey: 5}); err != nil {
+		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	raw := stub.calls()[0].rawQuery
 	if !sort.StringsAreSorted(strings.Split(raw, "&")) {
@@ -171,8 +171,8 @@ func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 
 func TestDirectChildrenNarrowsTheListing(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"last_row_key":0,"page_size":200}`)
-	if _, _, err := iot.ChildSpaces(context.Background(), 15, DirectChildren); err != nil {
-		t.Fatalf("ChildSpaces: unexpected error: %v", err)
+	if _, _, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{}); err != nil {
+		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	calls := stub.calls()
 	if got := calls[0].query.Get("only_sub"); got != "true" {
@@ -185,42 +185,42 @@ func TestDirectChildrenNarrowsTheListing(t *testing.T) {
 
 func TestListingRejectsAnUnsetScope(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-	if _, _, err := iot.SpaceResources(context.Background(), 15, Scope(0)); err == nil {
+	if _, _, err := iot.SpaceResources(context.Background(), 15, Scope(0), Page{}); err == nil {
 		t.Error("SpaceResources: got nil error for the zero Scope, want a rejection")
 	}
-	if _, _, err := iot.ChildSpaces(context.Background(), 15, Scope(0)); err == nil {
-		t.Error("ChildSpaces: got nil error for the zero Scope, want a rejection")
+	if _, _, err := iot.ListSpaces(context.Background(), 15, Scope(0), Page{}); err == nil {
+		t.Error("ListSpaces: got nil error for the zero Scope, want a rejection")
 	}
 	if calls := stub.calls(); len(calls) != 0 {
 		t.Errorf("made %d requests with an unset scope, want none", len(calls))
 	}
 }
 
-func TestChildSpacesRejectsTheZeroSpaceID(t *testing.T) {
+func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-	if _, _, err := iot.ChildSpaces(context.Background(), 0, DirectChildren); err == nil {
-		t.Error("ChildSpaces(0): got nil error, want a rejection")
+	if _, _, err := iot.ListSpaces(context.Background(), 0, DirectChildren, Page{}); err != nil {
+		t.Fatalf("ListSpaces(0): unexpected error: %v", err)
 	}
-	if calls := stub.calls(); len(calls) != 0 {
-		t.Errorf("made %d requests, want none", len(calls))
-	}
-	if _, _, err := iot.RootSpaces(context.Background(), DirectChildren); err != nil {
-		t.Fatalf("RootSpaces: unexpected error: %v", err)
+	if _, _, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{}); err != nil {
+		t.Fatalf("ListSpaces(15): unexpected error: %v", err)
 	}
 	calls := stub.calls()
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
 	}
 	if calls[0].query.Has("space_id") || calls[0].query.Has("spaceId") {
-		t.Errorf("RootSpaces sent a space id: %v", calls[0].query)
+		t.Errorf("ListSpaces(0) sent a space id: %v — Tuya reads that as a real space", calls[0].query)
+	}
+	if got := calls[1].query.Get("space_id"); got != "15" {
+		t.Errorf("space_id = %q, want 15", got)
 	}
 }
 
-func TestChildSpacesDecodesIDList(t *testing.T) {
+func TestListSpacesDecodesIDList(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"last_row_key":15000003,"data":[15000002,"15000003"],"page_size":200}`)
-	ids, page, err := iot.ChildSpaces(context.Background(), 15, DirectChildren)
+	ids, page, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{})
 	if err != nil {
-		t.Fatalf("ChildSpaces: unexpected error: %v", err)
+		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	if len(ids) != 2 || ids[0] != 15000002 || ids[1] != 15000003 {
 		t.Errorf("ids = %v, want [15000002 15000003]", ids)
@@ -301,14 +301,14 @@ func TestCreateSpaceOmitsTheZeroParent(t *testing.T) {
 	}
 }
 
-func TestSpaceContainsReportsFalseAsData(t *testing.T) {
+func TestSpaceRelationReportsFalseAsData(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `false`)
-	contains, err := iot.SpaceContains(context.Background(), 15, 16)
+	contains, err := iot.SpaceRelation(context.Background(), 15, 16)
 	if err != nil {
-		t.Fatalf("SpaceContains: unexpected error: %v", err)
+		t.Fatalf("SpaceRelation: unexpected error: %v", err)
 	}
 	if contains {
-		t.Error("SpaceContains = true, want false")
+		t.Error("SpaceRelation = true, want false")
 	}
 	calls := stub.calls()
 	if calls[0].path != "/v2.0/cloud/space/relation" {

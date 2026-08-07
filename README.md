@@ -115,7 +115,7 @@ Three composable tiers. Bind the one your caller needs:
   raw escape hatch for endpoints not yet wrapped.
 - **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `ListDevices`, `DeviceStatus`,
   `SendCommands`, `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`,
-  `DeleteSpace`, `SpaceResources`, `ChildSpaces`, `RootSpaces`, `SpaceContains` for spaces. One
+  `DeleteSpace`, `SpaceResources`, `ListSpaces`, `SpaceRelation` for spaces. One
   method per Tuya endpoint, so each call is one request and nothing is composed behind your
   back — including pagination, which is handed to you a page at a time rather than looped over
   silently. No notion of an owner at all; a holder can reach any device or space the project can.
@@ -255,15 +255,22 @@ space, so the common calls need no ID at all, and nothing reachable here can nam
 belonging to another owner:
 
 ```go
-rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren) // one page
-room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin")          // under the owner's
+// The last argument is the page you want. The zero Page is the first one, at Tuya's
+// own page size; hand the returned page back to get the next, once you have checked
+// there is one — a zero LastRowKey means that was the end, not "start over".
+rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, cloud.Page{})
+if next.LastRowKey != 0 {
+    rooms, next, err = hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, next)
+}
 
-things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree) // devices in it
+room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin") // under the owner's space
+
+things, next, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree, cloud.Page{})
 if errors.Is(err, tuya.ErrSpaceNotOwned) {
     // the space is outside the owner's subtree
 }
 
-space, err := hotel.SpaceOf(ctx, owner)                                    // which space is theirs
+space, err := hotel.SpaceOf(ctx, owner) // which space is theirs
 ```
 
 The two questions the door can answer about a space and a device:
@@ -422,9 +429,19 @@ Each one is a domain or usage constraint, not an oversight.
   Tuya's `only_sub` parameter decides whether a listing covers direct children or the whole
   subtree, and Tuya documents no default. An ownership check built on a listing that quietly
   covered the wrong depth would be wrong in a way nothing in the code would show, so
-  `SpaceResources` and `ChildSpaces` refuse the zero value and make the caller say
+  `SpaceResources` and `ListSpaces` refuse the zero value and make the caller say
   `DirectChildren` or `Subtree`. The parameter is then always sent explicitly, and Tuya's
   default never enters the picture.
+
+- **The page is an ordinary argument, and it is the same type coming back.**
+  Listings used to take `...cloud.PageOption` — `WithPageSize`, `WithLastRowKey`, over a struct
+  of two pointer fields. The pointers existed to tell "unset" from zero, a distinction this
+  domain does not have: `page_size=0` is not a request anyone means, and `last_row_key=0` is
+  precisely how Tuya says there is no next page. Meanwhile the call *returned* a `cloud.Page`
+  that no caller could hand back, so every walk unpacked it and rebuilt it as options. Now one
+  type travels both ways, a zero field is simply not sent, and the page you get is the page you
+  pass to get the one after it — once you have checked its `LastRowKey` is not zero, because a
+  zero cursor means the walk is over, not that it should start again.
 
 - **Query parameters are snake_case, and the query string is always ASCII-sorted.**
   Tuya's reference tables say `only_sub`, `last_row_key`, `page_size`, `space_id`; its example
@@ -444,7 +461,7 @@ Each one is a domain or usage constraint, not an oversight.
   so both decode. It is a `Long`: routing one through `any` or `float64` would corrupt IDs above
   2^53 in silence, and a test pins that it doesn't.
 
-- **`result: false` is an error for modify and delete, and data for `SpaceContains`.**
+- **`result: false` is an error for modify and delete, and data for `SpaceRelation`.**
   `Do` hands back the raw result as soon as Tuya says `success: true`, so a delete that answers
   `{"success":true,"result":false}` would otherwise read as a deletion that never happened. A
   *missing* result is treated the same way, because it is not a confirmation either — which is
@@ -453,7 +470,7 @@ Each one is a domain or usage constraint, not an oversight.
   parse error stand in for "gone".
   `ModifySpace` and `DeleteSpace` therefore return `error` alone and translate `false` into
   `cloud.ErrNotApplied` — that is translating a vendor protocol into a Go idiom, the same job
-  `Do` does for `code`, not composition. `SpaceContains` returns `(bool, error)` because there
+  `Do` does for `code`, not composition. `SpaceRelation` returns `(bool, error)` because there
   the boolean *is* the answer.
 
 - **Paging is never looped inside `cloud`, and the one loop in the library is bounded.**
@@ -464,12 +481,20 @@ Each one is a domain or usage constraint, not an oversight.
   documented signal *and* on a cursor that stopped moving, with a cap on pages read. The extra
   stops cost one comparison and turn any future surprise into a refusal rather than a hang.
 
-- **`RootSpaces` exists in `cloud`, and deliberately not in `SpaceIoT`.**
-  `GET /v2.0/cloud/space/child` without a `space_id` returns the top-level spaces of the whole
-  cloud project, all of them. It is legitimate for an operator and catastrophic on an
-  owner-scoped path, so it is a separate method rather than the zero-ID case of `ChildSpaces` (which rejects
-  zero), and the interface the spatial door declares does not mention it. The door cannot call
-  what it cannot name.
+- **`ListSpaces` takes a space ID of zero to mean the whole project, and a test keeps the door
+  away from it.**
+  `GET /v2.0/cloud/space/child` without a `space_id` returns the top-level spaces of the entire
+  cloud project. That is one endpoint with an optional parameter, so it is one method — Tuya
+  defines the zero case itself, and splitting it in two produced a name (`RootSpaces`) that no
+  endpoint had.
+
+  It is still legitimate for an operator and catastrophic on an owner-scoped path, and it used
+  to be the interface that ruled it out: the door could not call what it could not name. Now the
+  interface names it, so the guarantee moved into code that is asserted rather than typed.
+  `SpaceClient` reaches `ListSpaces` only through `resolve`, which turns a caller's zero into the
+  owner's own space, and `ownerSpace` refuses both an unlinked owner and a link whose space ID is
+  zero. A test drives the door with each of those and fails if a zero ever reaches `cloud` — and
+  it was checked against a deliberately broken guard, not just a passing run.
 
 - **`cloud.IoT` is one method per Tuya endpoint, with no exceptions.**
   If a method can't be pointed at exactly one endpoint, it is composing behavior, and

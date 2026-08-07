@@ -7,14 +7,14 @@ import (
 	"net/http"
 )
 
-type DataPoint struct {
-	Code  string `json:"code"`
-	Value any    `json:"value"`
-}
-
 type Channel struct {
 	Identifier string `json:"identifier"`
 	Name       string `json:"name"`
+}
+
+type DataPoint struct {
+	Code  string `json:"code"`
+	Value any    `json:"value"`
 }
 
 type Device struct {
@@ -26,8 +26,7 @@ type Device struct {
 }
 
 func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
-	path := fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID)
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -39,8 +38,7 @@ func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error)
 }
 
 func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
-	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,22 +52,20 @@ func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, e
 }
 
 func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
-	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID)
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`
 	}{Commands: commands})
 	if err != nil {
 		return fmt.Errorf("failed to marshal command payload: %w", err)
 	}
-	if _, err := c.client.Do(ctx, http.MethodPost, path, body); err != nil {
+	if _, err := c.client.Do(ctx, http.MethodPost, fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID), body); err != nil {
 		return fmt.Errorf("failed to send commands: %w", err)
 	}
 	return nil
 }
 
 func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
-	path := fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID)
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
 	if err != nil {
 		return nil, err
 	}

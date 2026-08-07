@@ -19,8 +19,6 @@ type SpaceID int64
 
 func (s SpaceID) String() string { return strconv.FormatInt(int64(s), 10) }
 
-func (s SpaceID) MarshalJSON() ([]byte, error) { return []byte(s.String()), nil }
-
 func (s *SpaceID) UnmarshalJSON(data []byte) error {
 	text := strings.Trim(string(data), `"`)
 	if text == "" || text == "null" {
@@ -63,72 +61,23 @@ const (
 	Subtree
 )
 
-type PageOption func(*pageQuery)
-
-type pageQuery struct {
-	lastRowKey *int64
-	pageSize   *int
-}
-
-func WithLastRowKey(cursor int64) PageOption {
-	return func(q *pageQuery) { q.lastRowKey = &cursor }
-}
-
-func WithPageSize(size int) PageOption {
-	return func(q *pageQuery) { q.pageSize = &size }
-}
-
-func listQuery(scope Scope, opts []PageOption) (url.Values, error) {
-	var onlySub string
+func listQuery(scope Scope, page Page) (url.Values, error) {
+	query := url.Values{}
 	switch scope {
 	case DirectChildren:
-		onlySub = "true"
+		query.Set("only_sub", "true")
 	case Subtree:
-		onlySub = "false"
+		query.Set("only_sub", "false")
 	default:
 		return nil, fmt.Errorf("invalid scope %d: pass DirectChildren or Subtree", scope)
 	}
-	var page pageQuery
-	for _, opt := range opts {
-		opt(&page)
+	if page.LastRowKey != 0 {
+		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
 	}
-	query := url.Values{}
-	query.Set("only_sub", onlySub)
-	if page.lastRowKey != nil {
-		query.Set("last_row_key", strconv.FormatInt(*page.lastRowKey, 10))
-	}
-	if page.pageSize != nil {
-		query.Set("page_size", strconv.Itoa(*page.pageSize))
+	if page.PageSize != 0 {
+		query.Set("page_size", strconv.Itoa(page.PageSize))
 	}
 	return query, nil
-}
-
-func decodePage(raw json.RawMessage, data any) (Page, error) {
-	if len(raw) == 0 {
-		return Page{}, nil
-	}
-	body := struct {
-		Data any `json:"data"`
-		Page
-	}{Data: data}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return Page{}, err
-	}
-	return body.Page, nil
-}
-
-func assertApplied(raw json.RawMessage) error {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ErrNotApplied
-	}
-	var applied bool
-	if err := json.Unmarshal(raw, &applied); err != nil {
-		return fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-	if !applied {
-		return ErrNotApplied
-	}
-	return nil
 }
 
 func (c *IoT) CreateSpace(ctx context.Context, name string, parentID SpaceID, description string) (SpaceID, error) {
@@ -152,7 +101,8 @@ func (c *IoT) CreateSpace(ctx context.Context, name string, parentID SpaceID, de
 }
 
 func (c *IoT) Space(ctx context.Context, id SpaceID) (Space, error) {
-	raw, err := c.client.Do(ctx, http.MethodGet, "/v2.0/cloud/space/"+id.String(), nil)
+	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return Space{}, err
 	}
@@ -167,6 +117,7 @@ func (c *IoT) Space(ctx context.Context, id SpaceID) (Space, error) {
 }
 
 func (c *IoT) ModifySpace(ctx context.Context, id SpaceID, name, description string) error {
+	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
 	body, err := json.Marshal(struct {
 		Name        string `json:"name,omitempty"`
 		Description string `json:"description,omitempty"`
@@ -174,83 +125,93 @@ func (c *IoT) ModifySpace(ctx context.Context, id SpaceID, name, description str
 	if err != nil {
 		return fmt.Errorf("failed to marshal space payload: %w", err)
 	}
-	raw, err := c.client.Do(ctx, http.MethodPut, "/v2.0/cloud/space/"+id.String(), body)
+	raw, err := c.client.Do(ctx, http.MethodPut, path, body)
 	if err != nil {
 		return err
 	}
-	if err := assertApplied(raw); err != nil {
-		return fmt.Errorf("modify space %s: %w", id, err)
+	var applied bool
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &applied); err != nil {
+			return fmt.Errorf("failed to unmarshal the result of modifying space %s: %w", id, err)
+		}
+	}
+	if !applied {
+		return fmt.Errorf("modify space %s: %w", id, ErrNotApplied)
 	}
 	return nil
 }
 
 func (c *IoT) DeleteSpace(ctx context.Context, id SpaceID) error {
-	raw, err := c.client.Do(ctx, http.MethodDelete, "/v2.0/cloud/space/"+id.String(), nil)
+	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
+	raw, err := c.client.Do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
 	}
-	if err := assertApplied(raw); err != nil {
-		return fmt.Errorf("delete space %s: %w", id, err)
+	var applied bool
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &applied); err != nil {
+			return fmt.Errorf("failed to unmarshal the result of deleting space %s: %w", id, err)
+		}
+	}
+	if !applied {
+		return fmt.Errorf("delete space %s: %w", id, ErrNotApplied)
 	}
 	return nil
 }
 
-func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, opts ...PageOption) ([]Resource, Page, error) {
-	query, err := listQuery(scope, opts)
+func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, page Page) ([]Resource, Page, error) {
+	query, err := listQuery(scope, page)
 	if err != nil {
 		return nil, Page{}, err
 	}
-	path := "/v2.0/cloud/space/" + id.String() + "/resource?" + query.Encode()
+	path := fmt.Sprintf("/v2.0/cloud/space/%s/resource?%s", id, query.Encode())
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
-	var resources []Resource
-	page, err := decodePage(raw, &resources)
-	if err != nil {
-		return nil, Page{}, fmt.Errorf("failed to unmarshal resources of space %s: %w", id, err)
+	var body struct {
+		Data []Resource `json:"data"`
+		Page
 	}
-	return resources, page, nil
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to unmarshal the resources of space %s: %w", id, err)
+		}
+	}
+	return body.Data, body.Page, nil
 }
 
-func (c *IoT) ChildSpaces(ctx context.Context, id SpaceID, scope Scope, opts ...PageOption) ([]SpaceID, Page, error) {
-	if id == 0 {
-		return nil, Page{}, errors.New("ChildSpaces needs a space id; call RootSpaces for the project's top level")
-	}
-	query, err := listQuery(scope, opts)
+func (c *IoT) ListSpaces(ctx context.Context, id SpaceID, scope Scope, page Page) ([]SpaceID, Page, error) {
+	query, err := listQuery(scope, page)
 	if err != nil {
 		return nil, Page{}, err
 	}
-	query.Set("space_id", id.String())
-	return c.childSpaces(ctx, query)
-}
-
-func (c *IoT) RootSpaces(ctx context.Context, scope Scope, opts ...PageOption) ([]SpaceID, Page, error) {
-	query, err := listQuery(scope, opts)
+	if id != 0 {
+		query.Set("space_id", id.String())
+	}
+	path := fmt.Sprintf("/v2.0/cloud/space/child?%s", query.Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
-	return c.childSpaces(ctx, query)
+	var body struct {
+		Data []SpaceID `json:"data"`
+		Page
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to unmarshal space list: %w", err)
+		}
+	}
+	return body.Data, body.Page, nil
 }
 
-func (c *IoT) childSpaces(ctx context.Context, query url.Values) ([]SpaceID, Page, error) {
-	raw, err := c.client.Do(ctx, http.MethodGet, "/v2.0/cloud/space/child?"+query.Encode(), nil)
-	if err != nil {
-		return nil, Page{}, err
-	}
-	var ids []SpaceID
-	page, err := decodePage(raw, &ids)
-	if err != nil {
-		return nil, Page{}, fmt.Errorf("failed to unmarshal child spaces: %w", err)
-	}
-	return ids, page, nil
-}
-
-func (c *IoT) SpaceContains(ctx context.Context, parent, child SpaceID) (bool, error) {
+func (c *IoT) SpaceRelation(ctx context.Context, parent, child SpaceID) (bool, error) {
 	query := url.Values{}
 	query.Set("parent_id", parent.String())
 	query.Set("child_id", child.String())
-	raw, err := c.client.Do(ctx, http.MethodGet, "/v2.0/cloud/space/relation?"+query.Encode(), nil)
+	path := fmt.Sprintf("/v2.0/cloud/space/relation?%s", query.Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false, err
 	}

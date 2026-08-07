@@ -26,7 +26,7 @@ Sisanya dibentuk oleh **kendala API Tuya** — signing wajib hash full-body, ret
 query wajib urut ASCII, tidak ada lookup device→space. Ini fakta, bukan preferensi. Turunannya
 satu aturan: **library menjawab pertanyaan identitas kalau Tuya memberi primitifnya; kalau tidak,
 ia tidak mengarang satu dengan brute force lalu menagihkannya diam-diam.** `HasDevice` punya
-primitif (`ListDevices`, satu request). `ContainsSpace` punya (`SpaceContains`, satu request).
+primitif (`ListDevices`, satu request). `ContainsSpace` punya (`SpaceRelation`, satu request).
 `ContainsDevice` tidak punya — makanya ia method tersendiri yang biayanya ditulis, bukan guard
 yang jalan diam-diam di tiap perintah.
 
@@ -67,8 +67,9 @@ space.go       (root) Pintu spatial, utuh: Space, ErrSpaceNotLinked, ErrSpaceNot
                ErrOwnerSpaceProtected, interface SpaceStore + SpaceIoT, struct SpaceClient +
                NewSpaceClient + SpaceOf(), lalu operasi space-nya: CreateSpace/Space/
                ModifySpace/DeleteSpace/ChildSpaces/SpaceResources (resolve owner →
-               assertSpaceOwned → delegate), plus dua penjawab publik: ContainsSpace
-               (satu request, SpaceContains) dan ContainsDevice (scan resource seluruh
+               assertSpaceOwned → delegate; ChildSpaces di sini nama pintu root, yang
+               dipanggilnya cloud.ListSpaces), plus dua penjawab publik: ContainsSpace
+               (satu request, SpaceRelation) dan ContainsDevice (scan resource seluruh
                subtree, berhalaman dan berbatas — deviceScanPageSize/deviceScanMaxPages).
                ID space 0 selalu berarti space milik owner, tidak pernah top level project.
 space_test.go  (package tuya_test) unit test SpaceClient lewat fake SpaceIoT + fake
@@ -93,9 +94,12 @@ cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. 
   space.go     Domain space: tipe SpaceID (terima JSON number MAUPUN string), Space,
                Resource, Page, Scope, ErrNotApplied, ErrSpaceNotFound, plus delapan method *IoT di atas tujuh
                endpoint /v2.0/cloud/space*: CreateSpace, Space, ModifySpace, DeleteSpace,
-               SpaceResources, ChildSpaces, RootSpaces, SpaceContains. ChildSpaces dan
-               RootSpaces berbagi satu endpoint (child) — dipisah supaya id 0 tidak diam-diam
-               berubah jadi "lihat seluruh project". Tanpa guard, tanpa loop pagination.
+               SpaceResources, ListSpaces, SpaceRelation. ListSpaces satu banding satu dengan
+               endpoint child: id 0 = space_id tidak dikirim = top level cloud project, persis
+               seperti yang Tuya dokumentasikan. Tiap method menulis request-nya sendiri sampai
+               selesai (tanpa helper bersama) supaya terbaca lurus dari atas ke bawah, sama
+               seperti device.go. Tanpa guard, tanpa loop pagination. Satu-satunya helper yang
+               tersisa: listQuery (only_sub + cursor + page size).
 postgres/
   app_account.go
                App-account management (owner -> tuya_uid): AppAccountStore.Get/Link/Unlink,
@@ -186,9 +190,10 @@ hotel := tuya.NewSpaceClient(iot, spaces) // iot yang sama, diterima sebagai tuy
 _, err = spaces.Link(ctx, owner, spaceID)
 
 // id 0 = space milik owner sendiri, tidak pernah top level project
-rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren)
+// cloud.Page{} = halaman pertama; halaman yang dikembalikan diumpankan balik untuk berikutnya
+rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, cloud.Page{})
 room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "")
-things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree)
+things, next, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree, cloud.Page{})
 
 // ContainsDevice men-scan subtree — mahal, jadi ia method tersendiri yang consumer
 // panggil sadar, bukan guard yang jalan diam-diam di tiap perintah
@@ -297,7 +302,7 @@ Jangan pernah edit migration yang sudah di-commit.
 - **Operasi space tetap menolak space di luar jangkauan owner — dan itu bukan pengecualian dari
   "menjawab, bukan memutuskan".** ID yang diterima method-method itu *owner-relative by
   construction*: 0 berarti space owner, dan pintu ini memang tidak punya cara mengekspresikan
-  operasi atas space orang lain. Guard-nya (`assertSpaceOwned`) satu request lewat `SpaceContains`,
+  operasi atas space orang lain. Guard-nya (`assertSpaceOwned`) satu request lewat `SpaceRelation`,
   dan karena containment transitif ia sekaligus menyelesaikan cascade pada delete. Consumer yang
   punya aturan sendiri tetap bisa bertanya duluan lewat `ContainsSpace`, atau memakai `cloud.IoT`
   yang tanpa konsep owner.
@@ -318,14 +323,21 @@ Jangan pernah edit migration yang sudah di-commit.
   itu salah, dan salah ejaan tidak menghasilkan error, cuma diam-diam pakai default server.
 - **`result: false` diterjemahkan jadi error (`cloud.ErrNotApplied`) untuk modify & delete.**
   `Do` mengembalikan `result` mentah begitu `success: true`, jadi tanpa ini "terhapus" bisa berarti
-  tidak terhapus. Untuk `SpaceContains` boolean-nya justru datanya, jadi `false` dikembalikan apa
+  tidak terhapus. Untuk `SpaceRelation` boolean-nya justru datanya, jadi `false` dikembalikan apa
   adanya. `result` yang **tidak ada** diperlakukan sama dengan `false` — dan itu nyata: menanyakan
   space yang sudah dihapus dijawab `success:true` tanpa `result` sama sekali, jadi `Space`
   mengembalikan `ErrSpaceNotFound`, bukan error parser JSON.
-- **`RootSpaces` sengaja tidak masuk interface `SpaceIoT`.** Endpoint `child` tanpa `space_id`
-  mengembalikan top level seluruh cloud project — semuanya sekaligus. Ia ada di `cloud` (trusted) sebagai
-  method tersendiri supaya `id` 0 tidak diam-diam berarti itu, dan tidak dapat dijangkau dari
-  pintu owner-scoped karena interface-nya tidak menyebutnya.
+- **`cloud.ListSpaces(ctx, 0, …)` mengembalikan top level seluruh cloud project, dan yang
+  menahannya sekarang tes, bukan tipe.** Dulu ini dua method (`ChildSpaces` yang menolak id 0 +
+  `RootSpaces` yang sengaja tidak masuk interface `SpaceIoT`), supaya pintu owner-scoped
+  *tidak bisa menyebut* operasi seluruh-project. Digabung Agustus 2026 karena memang satu
+  endpoint dan Tuya sendiri mendefinisikan "tanpa space_id = root directory". Yang hilang
+  jaminan struktural, yang tersisa jaminan perilaku: `ownerSpace()` menolak owner tanpa link
+  **dan** link yang space_id-nya 0 dengan `ErrSpaceNotLinked`, lalu `resolve()` memetakan id 0
+  dari pemanggil jadi space owner — sehingga `target` yang dioper ke `ListSpaces` tidak pernah
+  0. `TestTheDoorNeverListsTheWholeProject` di space_test.go yang menjaganya, dan sudah
+  diverifikasi gagal kalau guard `space.SpaceID == 0` dicabut. Kalau nanti ada method baru di
+  `SpaceClient` yang meneruskan space id ke `ListSpaces`, ia wajib lewat `resolve()`.
 - **Space yang di-link owner tidak bisa dihapus lewat pintu** (`ErrOwnerSpaceProtected`). Tuya
   menghapus subspace bersama induknya, jadi menghapusnya = menghapus seluruh jangkauan owner dan
   menyisakan mapping yang menunjuk space yang sudah tidak ada. Rename tetap boleh.
@@ -381,6 +393,26 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   `firestore.Option`; dan `firestore.DefaultCollection` → `DefaultAppAccountCollection`,
   berdampingan dengan `DefaultSpaceCollection`. Pemakaian `postgres.WithAutoMigrate()` /
   `firestore.WithCollection(...)` di call site tidak berubah.
+- **Halaman itu argumen `cloud.Page`, bukan functional option.** Dulu `SpaceResources`/
+  `ChildSpaces`/`RootSpaces` (waktu itu masih dua method) menerima `...PageOption` di atas
+  struct dua field pointer. Pointer itu membedakan "tidak diset" dari nol — padahal di domain ini
+  nol memang sudah berarti tidak ada, di kedua arah: `page_size=0` bukan permintaan yang berarti,
+  dan `last_row_key=0` justru cara Tuya bilang tidak ada halaman lagi. Yang lebih menusuk: API
+  **mengembalikan** `Page` tapi pemanggil tidak bisa menyerahkannya kembali — `ContainsDevice`
+  membongkarnya lalu merakit ulang jadi options tiap iterasi. Sekarang satu tipe untuk dua arah,
+  field nol = tidak dikirim, halaman yang dikembalikan bisa langsung diumpankan balik (setelah
+  `LastRowKey != 0` dicek — nol berarti habis, bukan mulai dari awal). Breaking, v0.9.0.
+- **`SpaceID.MarshalJSON` dihapus karena hasilnya persis sama dengan default.** `type SpaceID
+  int64` sudah di-marshal sebagai JSON number tanpa bantuan siapa pun, termasuk di field
+  ber-`omitempty` (`omitempty` melihat nilai Go-nya, bukan hasil marshal). `UnmarshalJSON` tetap
+  ada karena ia benar-benar bekerja: terima number MAUPUN string.
+  `TestCreateSpaceOmitsTheZeroParent` yang menjaga bentuk body-nya tetap number telanjang.
+- **`cloud/space.go` mengikuti gaya `cloud/device.go`: tiap method utuh dari path sampai decode.**
+  `decodePage` (yang mengoper `any`), `assertApplied`, dan helper `childSpaces` dilebur ke
+  pemanggilnya masing-masing — dua sampai tiga call site, dan hasilnya tiap method terbaca lurus
+  tanpa lompat ke helper, dengan struct decode yang bertipe (bukan `any`) dan pesan error yang
+  menyebut operasinya sendiri. `listQuery` sengaja tetap: ia memegang penolakan `Scope` nol, satu
+  aturan yang tidak boleh punya tiga salinan yang bisa berbeda diam-diam.
 - **Kontradiksi doc Tuya sudah diuji ke API sungguhan (DC Singapore, 7 Agustus 2026).** Hasilnya,
   dan ini yang dipakai kode sekarang:
   1. **Query param = snake_case.** `page_size=3` mengembalikan 3 baris; `pageSize=3` **diabaikan
