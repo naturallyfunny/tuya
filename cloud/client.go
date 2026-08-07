@@ -1,12 +1,4 @@
-// Package cloud is the pure-Tuya layer of the library: it speaks the Tuya Cloud
-// OpenAPI and is keyed by Tuya UID, with no notion of an app-level owner.
-//
-// It speaks Tuya at the app (project) level — a single access ID/secret yields
-// an access token that Client caches and refreshes on its own. Two orthogonal
-// pieces compose here: Client is the transport (signing, token, Do); IoT
-// wraps a Client and performs device operations against a Tuya account UID.
-// IoT carries no tenant guard — mapping an opaque owner ID to a human's
-// Tuya UID and asserting ownership is the root tuya package's concern.
+// Package cloud is the pure-Tuya layer of the library, keyed by Tuya UID.
 package cloud
 
 import (
@@ -19,10 +11,6 @@ import (
 	"sync"
 )
 
-// Client talks to the Tuya Cloud OpenAPI at the app level. The access token is
-// cached in memory and refreshed on demand (lazily on expiry, and reactively
-// when Tuya reports code 1010); there is no per-user token store because the
-// credential is project-wide.
 type Client struct {
 	accessID     string
 	accessSecret string
@@ -32,18 +20,8 @@ type Client struct {
 	tokenLock    sync.RWMutex
 }
 
-// Option configures a Client at construction time. The zero-configuration Client
-// is fully usable; options only override defaults (currently just the HTTP
-// client). New options can be added without breaking the New signature.
 type Option func(*Client)
 
-// New builds a Client. accessID and accessSecret are the Tuya Cloud project
-// credentials; baseURL selects the regional data-center endpoint (e.g.
-// https://openapi.tuyaus.com for the US, tuyaeu/tuyacn/tuyain for EU/China/India).
-// Behaviour is tuned with Options such as WithHTTPClient. New prefetches an
-// access token so a bad credential or unreachable region fails here, at wiring
-// time, not on the first device call. Wrap the Client with NewIoT to perform
-// device operations.
 func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error) {
 	client := &Client{
 		accessID:     accessID,
@@ -63,37 +41,20 @@ func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error
 	return client, nil
 }
 
-// WithHTTPClient sets the http.Client used for every Tuya request, controlling
-// timeouts and transport. Without it, New uses http.DefaultClient.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = httpClient
 	}
 }
 
-// IoT is a trusted facade over a transport Client: typed access to the Tuya
-// Cloud OpenAPI, organized per domain (device.go, and future home.go /
-// space.go). Client.Do is a raw escape hatch for endpoints not yet wrapped.
-//
-// Every method here maps one-to-one onto a single Tuya endpoint. That is the
-// rule that keeps this layer honest: a method that cannot be pointed at one
-// endpoint is composing behaviour, and composition belongs to the caller that
-// wants it. So there is no ownership check here (that is the root package's concept)
-// and no channel-name enrichment (that needs a judgement about which categories
-// are multi-gang, plus a fan-out policy). Both used to live here and were moved
-// out. Transport policy — token refresh, retry on code 1010 — is a different
-// matter and stays in Client, since it is protocol correctness, not domain
-// composition.
 type IoT struct {
 	client *Client
 }
 
-// NewIoT wraps a transport Client with IoT operations.
 func NewIoT(c *Client) *IoT {
 	return &IoT{client: c}
 }
 
-// response is the envelope every Tuya Cloud OpenAPI call returns.
 type response struct {
 	Success bool            `json:"success"`
 	T       int64           `json:"t"`
@@ -103,13 +64,6 @@ type response struct {
 	Msg     string          `json:"msg,omitempty"`
 }
 
-// Do performs a signed, authenticated request against the Tuya Cloud OpenAPI.
-//
-// If Tuya rejects the token (code 1010) it forces a fresh one and replays the
-// request once. The refresh ignores the cached expiry on purpose: Tuya rejects
-// tokens our own clock still considers valid, and consulting that clock would
-// mean retrying with the token just refused. A second 1010 is a genuine failure
-// and is returned to the caller.
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
 	const maxIoTRequestAttempts = 2
 	for attempt := range maxIoTRequestAttempts {
@@ -146,9 +100,6 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		if tuyaResp.Success {
 			return tuyaResp.Result, nil
 		}
-		// Tuya says the token is invalid, so refresh unconditionally rather than
-		// consulting the cached expiry — which may well still look valid, and
-		// would leave us replaying the token Tuya just refused.
 		const tokenExpiredTuyaErrorCode = 1010
 		if tuyaResp.Code == tokenExpiredTuyaErrorCode && attempt == 0 {
 			if err := c.forceRefreshToken(ctx); err != nil {

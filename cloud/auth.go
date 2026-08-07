@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// setAuthHeaders sets all Tuya authentication headers on req from sig. Shared by
-// both the token and business request flows.
 func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
 	req.Header.Set("client_id", accessID)
 	req.Header.Set("sign", sig.Sign)
@@ -26,8 +24,6 @@ func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
 	req.Header.Set("nonce", sig.Nonce)
 }
 
-// --- Request signing ---
-
 type signature struct {
 	Sign        string
 	Timestamp   string
@@ -36,9 +32,6 @@ type signature struct {
 	AccessToken string
 }
 
-// hmacSign is the shared HMAC-SHA256 core. It builds the Tuya tuyaStr
-// (accessID + accessToken + timestamp + nonce + stringToSign) and returns a
-// fully populated signature. accessToken is "" for token requests.
 func hmacSign(accessID, accessSecret, accessToken, method, path string, body []byte) (*signature, error) {
 	timestamp := strconv.FormatInt(time.Now().UnixNano()/int64(time.Millisecond), 10)
 	hash := sha256.New()
@@ -63,18 +56,12 @@ func hmacSign(accessID, accessSecret, accessToken, method, path string, body []b
 	}, nil
 }
 
-// signTokenRequest signs a token-acquisition request. The access token is
-// intentionally absent from the string-to-sign, as Tuya specifies for
-// grant_type=1 calls. Must NOT read c.token or c.tokenLock — this is called
-// from fetchToken while the write lock is already held.
+// Must NOT read c.token or c.tokenLock: called from fetchToken with the write
+// lock already held, so taking RLock here deadlocks.
 func (c *Client) signTokenRequest(method, path string, body []byte) (*signature, error) {
 	return hmacSign(c.accessID, c.accessSecret, "", method, path, body)
 }
 
-// signBusinessRequest signs a normal (authenticated) API request. It reads the
-// current access token under RLock and embeds it in both the HMAC string and
-// the returned AccessToken field, ensuring the header and the signature always
-// use the same value.
 func (c *Client) signBusinessRequest(method, path string, body []byte) (*signature, error) {
 	var accessToken string
 	c.tokenLock.RLock()
@@ -85,11 +72,6 @@ func (c *Client) signBusinessRequest(method, path string, body []byte) (*signatu
 	return hmacSign(c.accessID, c.accessSecret, accessToken, method, path, body)
 }
 
-// --- Token lifecycle ---
-
-// token is an app-level Tuya access token. ExpireTime is normalized to an
-// absolute Unix timestamp once stored (Tuya returns it as a duration in
-// seconds).
 type token struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -128,9 +110,7 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	return &tuyaResp, nil
 }
 
-// updateToken fetches a fresh token and stores it. The caller must already hold
-// c.tokenLock for writing: this both writes c.token and reaches signTokenRequest,
-// which must not take the lock itself.
+// Caller must already hold c.tokenLock for writing.
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
@@ -148,10 +128,6 @@ func (c *Client) updateToken(ctx context.Context) error {
 	return nil
 }
 
-// ensureValidToken fetches a token if there is none, or if the cached one has
-// expired by our own clock. It is the lazy path, taken before a request goes
-// out. Use forceRefreshToken instead once Tuya has rejected a token: this
-// function trusts the cached expiry and would do nothing.
 func (c *Client) ensureValidToken(ctx context.Context) error {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
@@ -161,14 +137,6 @@ func (c *Client) ensureValidToken(ctx context.Context) error {
 	return c.updateToken(ctx)
 }
 
-// forceRefreshToken fetches a new token whatever the cached expiry claims.
-//
-// This is the reactive path, for when Tuya answers code 1010 (token invalid).
-// Its verdict beats our local clock: a token can be dead well before the expiry
-// we recorded — the project credential was rotated, our clock drifted, or
-// another process holding the same access ID caused Tuya to issue a new one.
-// Asking ensureValidToken here would return nil without doing anything, and the
-// retry would replay the exact token Tuya just refused.
 func (c *Client) forceRefreshToken(ctx context.Context) error {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()

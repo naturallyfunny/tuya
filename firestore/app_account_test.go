@@ -11,7 +11,7 @@ func TestValidateOwner(t *testing.T) {
 		"someone@example.com",
 		"a",
 		strings.Repeat("x", 1500),
-		"__x", "x__", "___", // too short to match the reserved __*__ pattern
+		"__x", "x__", "___",
 		".hidden", "..dots",
 	}
 	for _, owner := range valid {

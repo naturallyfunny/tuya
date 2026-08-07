@@ -7,28 +7,16 @@ import (
 	"net/http"
 )
 
-// DataPoint is a single Tuya data point (DP): a capability code paired with its
-// value. It is both how a device reports its state and how it is told to change
-// — e.g. {Code: "switch_1", Value: true}.
 type DataPoint struct {
 	Code  string `json:"code"`
 	Value any    `json:"value"`
 }
 
-// Channel names one switch/outlet of a multi-gang device, mapping its DP
-// identifier (e.g. "switch_1") to the human-given label (e.g. "Kitchen light").
 type Channel struct {
 	Identifier string `json:"identifier"`
 	Name       string `json:"name"`
 }
 
-// Device is a Tuya device with its current state.
-//
-// CodeNameMapping is never populated by ListDevices. Tuya serves channel labels
-// from a separate endpoint (DeviceChannelNames), and deciding which devices are
-// worth that extra request is a judgement about Tuya's catalogue that this layer
-// does not make. It is left nil for callers that compose the two — see
-// tuya.AppAccountClient.ListDevices.
 type Device struct {
 	ID              string      `json:"id"`
 	Category        string      `json:"category"`
@@ -37,8 +25,6 @@ type Device struct {
 	CodeNameMapping []Channel   `json:"code_name_mapping"`
 }
 
-// ListDevices returns every device on the account, each with its current
-// status. One request: GET /v1.0/users/{uid}/devices.
 func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	path := fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
@@ -52,9 +38,6 @@ func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error)
 	return devices, nil
 }
 
-// DeviceStatus reads the current status (DPs) of a device. This layer is
-// trusted and device-addressed: the caller is responsible for verifying the
-// device belongs to whoever asked (see the root tuya package).
 func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
@@ -70,9 +53,6 @@ func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, e
 	return status, nil
 }
 
-// SendCommands sends DP commands to a device. This layer is trusted and
-// device-addressed: the caller is responsible for verifying the device belongs
-// to whoever asked (see the root tuya package).
 func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	path := fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID)
 	body, err := json.Marshal(struct {
@@ -87,10 +67,6 @@ func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []Data
 	return nil
 }
 
-// DeviceChannelNames returns the human-given label for each switch/outlet
-// channel of a device. One request: GET /v1.0/devices/{device_id}/multiple-names.
-// Devices that have no channels come back with an empty list rather than an
-// error, so a caller may ask about any device.
 func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
 	path := fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)

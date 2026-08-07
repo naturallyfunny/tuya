@@ -1,6 +1,3 @@
-// Package postgres provides a PostgreSQL-backed app-account mapping for the Tuya
-// library: the owner → Tuya-UID link a consumer resolves (via
-// tuya.AppAccountClient) before driving devices.
 package postgres
 
 import (
@@ -19,43 +16,26 @@ import (
 //go:embed migrations
 var migrationFiles embed.FS
 
-// Querier is the subset of *pgxpool.Pool / *pgx.Conn / *pgx.Tx that Store
-// needs, so consumers can inject any of them (including test doubles).
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// AppAccountStore maps an owner to the human's Tuya app-account UID, backed by
-// PostgreSQL. It owns the full lifecycle of that mapping: Get reads it, Link
-// creates or refreshes it, and Unlink soft-deletes it. A consumer links an
-// account once (after the human authorizes Tuya), then drives devices by owner
-// via tuya.AppAccountClient, which resolves owner -> UID with Get. That is the
-// app-account tenancy model; Tuya's spatial model needs no such mapping, and
-// will bring its own SpaceStore rather than widening this one.
 type AppAccountStore struct {
 	db          Querier
 	autoMigrate bool
 }
 
-// Compile-time proof this satisfies the interface the root package declares. It
-// is the whole point of the type, and a signature drift should fail the build
-// here rather than at a consumer's wiring.
 var _ tuya.AppAccountStore = (*AppAccountStore)(nil)
 
-// Option configures an AppAccountStore.
 type Option func(*AppAccountStore)
 
-// WithAutoMigrate runs pending schema migrations when NewAppAccountStore is called.
 func WithAutoMigrate() Option {
 	return func(s *AppAccountStore) {
 		s.autoMigrate = true
 	}
 }
 
-// NewAppAccountStore builds an AppAccountStore over db. Pass WithAutoMigrate() to apply
-// pending schema migrations on startup; otherwise the caller is responsible
-// for running migrations before the store is used.
 func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAccountStore, error) {
 	if db == nil {
 		panic("postgres: NewAppAccountStore called with nil Querier")
@@ -69,15 +49,11 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAc
 			return nil, fmt.Errorf("postgres: auto-migrate: %w", err)
 		}
 	} else if err := s.validateSchema(ctx); err != nil {
-		// Only meaningful when we did not migrate: catches a consumer that
-		// forgot to run migrations. After auto-migrate the schema is guaranteed.
 		return nil, err
 	}
 	return s, nil
 }
 
-// Get returns the full Account linked to owner, or tuya.ErrAccountNotLinked if
-// none is linked.
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner = $1 AND deleted_at IS NULL`,
@@ -99,10 +75,6 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccoun
 	return acc, nil
 }
 
-// Link records that owner maps to tuyaUID, returning the resulting Account. It
-// is an upsert: linking an owner that is already linked refreshes the UID and
-// updated_at, and re-linking a previously unlinked owner revives the row
-// (clearing deleted_at) rather than failing on the primary key.
 func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya.AppAccount, error) {
 	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_app_accounts (owner, tuya_uid)
@@ -125,9 +97,6 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya
 	return acc, nil
 }
 
-// Unlink soft-deletes the mapping for owner (setting deleted_at), so Get stops
-// returning it while the row is preserved for audit. Returns
-// tuya.ErrAccountNotLinked if no live mapping exists.
 func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE tuya_app_accounts
@@ -144,8 +113,6 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	return nil
 }
 
-// migrate applies all pending .up.sql migrations in order, skipping any that
-// have already been recorded in tuya_schema_migrations.
 func (s *AppAccountStore) migrate(ctx context.Context) error {
 	if _, err := s.db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS tuya_schema_migrations (

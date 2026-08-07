@@ -11,8 +11,6 @@ import (
 	"go.naturallyfunny.dev/tuya/cloud"
 )
 
-// fakeStore is an in-memory AppAccountStore. Only Get is exercised; Link/Unlink
-// panic so an accidental call is loud.
 type fakeStore struct {
 	acc      tuya.AppAccount
 	err      error
@@ -32,9 +30,6 @@ func (f *fakeStore) Unlink(context.Context, string) error {
 	panic("Unlink not expected in these tests")
 }
 
-// fakeIoT is a recording stub for the tuya.IoT facade. It records which device
-// IDs channel names were requested for, so tests can prove the ownership guard
-// stays lean while the human-facing listing does resolve labels.
 type fakeIoT struct {
 	devices      []cloud.Device
 	status       []cloud.DataPoint
@@ -54,15 +49,11 @@ type fakeIoT struct {
 
 func (f *fakeIoT) ListDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
-	// Hand back a copy: the client writes CodeNameMapping into the slice it gets,
-	// and a shared backing array would leak that between calls.
 	out := make([]cloud.Device, len(f.devices))
 	copy(out, f.devices)
 	return out, f.listErr
 }
 
-// DeviceChannelNames is called concurrently by resolveChannelNames, so its
-// recording is mutex-guarded.
 func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]cloud.Channel, error) {
 	f.mu.Lock()
 	f.channelIDs = append(f.channelIDs, deviceID)
@@ -73,8 +64,6 @@ func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]clou
 	return f.channels[deviceID], nil
 }
 
-// listCalled reports whether ListDevices was reached at all — used to prove a
-// call short-circuited before touching Tuya.
 func (f *fakeIoT) listCalled() bool { return len(f.listUIDs) > 0 }
 
 func (f *fakeIoT) DeviceStatus(_ context.Context, _ string) ([]cloud.DataPoint, error) {
@@ -93,9 +82,6 @@ func linkedAccount() tuya.AppAccount {
 	return tuya.AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
-// ownedDevices is the account listing the guard sees when dev-1 belongs to the
-// resolved owner. It is multi-gang so tests can prove the guard skips labels
-// even when they would apply.
 func ownedDevices() []cloud.Device {
 	return []cloud.Device{{ID: "dev-1", Category: "kg"}}
 }
@@ -114,8 +100,6 @@ func TestListDevices(t *testing.T) {
 	if store.gotOwner != "owner-1" {
 		t.Errorf("store.Get called with %q, want owner-1", store.gotOwner)
 	}
-	// A device with no category is not multi-gang: no label request, but the
-	// mapping is still a non-nil empty slice.
 	if len(iot.channelIDs) != 0 {
 		t.Errorf("channel names requested for %v, want none", iot.channelIDs)
 	}
@@ -124,8 +108,6 @@ func TestListDevices(t *testing.T) {
 	}
 }
 
-// Only multi-gang categories are worth the extra request, and their labels must
-// land on the right device.
 func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
@@ -162,8 +144,6 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	}
 }
 
-// A device whose labels fail to resolve must not silently disappear from the
-// error: the whole listing fails, naming the device.
 func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
@@ -207,8 +187,6 @@ func TestDeviceStatusOwned(t *testing.T) {
 	if len(iot.listUIDs) != 1 || iot.listUIDs[0] != "uid-1" {
 		t.Errorf("guard listed uids %v, want one call with uid-1", iot.listUIDs)
 	}
-	// The guard must stay lean: no channel-name fetches on ownership checks,
-	// even though the device it guards is multi-gang.
 	if len(iot.channelIDs) != 0 {
 		t.Errorf("guard requested channel names for %v, want none", iot.channelIDs)
 	}
@@ -269,8 +247,6 @@ func TestSendCommandsAccountNotLinked(t *testing.T) {
 	}
 }
 
-// A listing that fails must surface as that failure, not as ErrDeviceNotOwned:
-// an unreachable Tuya is not evidence about who owns what.
 func TestAssertOwnedSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}

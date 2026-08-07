@@ -10,18 +10,11 @@ import (
 	"testing"
 )
 
-// tuyaStub stands in for a Tuya data center over a real HTTP server: it issues
-// tokens and records the access_token each business call arrived with, so a test
-// can tell whether a retry reused a token or fetched a new one.
 type tuyaStub struct {
 	mu sync.Mutex
 
-	// tokensIssued counts calls to the token endpoint. New always causes one.
-	tokensIssued int
-	// businessTokens is the access_token header of every non-token request.
-	businessTokens []string
-	// rejectFirstCall makes the first business call answer code 1010, the way
-	// Tuya reports a token it no longer accepts.
+	tokensIssued    int
+	businessTokens  []string
 	rejectFirstCall bool
 }
 
@@ -33,8 +26,6 @@ func (s *tuyaStub) handler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(r.URL.Path, "/v1.0/token") {
 		s.tokensIssued++
-		// expire_time is a duration in seconds; 7200 puts the cached expiry far
-		// enough in the future that a clock-based check would call it valid.
 		fmt.Fprintf(w, `{"success":true,"t":1,"result":{"access_token":"tok-%d","expire_time":7200,"uid":"uid-1"}}`, s.tokensIssued)
 		return
 	}
@@ -59,9 +50,6 @@ func newStubbedClient(t *testing.T, stub *tuyaStub) *Client {
 	return client
 }
 
-// Tuya rejecting a token it issued must force a refresh, even though the cached
-// expiry still looks valid. Consulting that expiry would replay the very token
-// Tuya just refused, burning a second request to fail the same way.
 func TestDoRefreshesOnCode1010DespiteUnexpiredCachedToken(t *testing.T) {
 	stub := &tuyaStub{rejectFirstCall: true}
 	client := newStubbedClient(t, stub)
@@ -84,8 +72,6 @@ func TestDoRefreshesOnCode1010DespiteUnexpiredCachedToken(t *testing.T) {
 	}
 }
 
-// The happy path must not refresh: a valid cached token is reused, and New's
-// prefetch stays the only token request.
 func TestDoReusesCachedToken(t *testing.T) {
 	stub := &tuyaStub{}
 	client := newStubbedClient(t, stub)
@@ -107,10 +93,7 @@ func TestDoReusesCachedToken(t *testing.T) {
 	}
 }
 
-// A second 1010, after the refresh, is a real failure and must surface as the
-// Tuya error rather than looping.
 func TestDoStopsAfterOneRefresh(t *testing.T) {
-	// alwaysReject: every business call answers 1010.
 	stub := &tuyaStub{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stub.mu.Lock()
