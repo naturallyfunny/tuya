@@ -22,8 +22,9 @@ file, bukan dirakit dari file tipe + file perilaku.
 ```
 tuya.go        (root, package tuya) Yang dipakai semua pintu: package doc, interface IoT
                (di-satisfy *cloud.IoT), ErrDeviceNotOwned. Tidak ada pintu di sini.
-app_account.go (root) Pintu app-account, utuh: Account, ErrAccountNotLinked, AccountStore
-               interface, struct AppAccountClient + NewAppAccountClient + Account(), lalu
+app_account.go (root) Pintu app-account, utuh: AppAccount, ErrAccountNotLinked,
+               AppAccountStore interface, struct AppAccountClient + NewAppAccountClient
+               + Account() (receiver sudah bilang "App", method tidak mengulang), lalu
                operasi device-nya: ListDevices (resolve owner → list → resolveChannelNames),
                DeviceStatus/SendCommands (resolve → assertOwned → delegate), assertOwned
                (list-then-contains), isMultiGang (heuristik kategori kg/cz*),
@@ -32,7 +33,7 @@ app_account.go (root) Pintu app-account, utuh: Account, ErrAccountNotLinked, Acc
                Pintu kedua (model spatial) → space.go, sejajar, belum ada.
 app_account_test.go
                (package tuya_test) unit test AppAccountClient lewat fake IoT + fake
-               AccountStore: happy path + ErrAccountNotLinked / ErrDeviceNotOwned,
+               AppAccountStore: happy path + ErrAccountNotLinked / ErrDeviceNotOwned,
                short-circuit guard, resolusi channel-name, dan bukti guard tidak ikut
                menembak multiple-names.
 cloud/         Package cloud — layer Tuya murni (keyed by Tuya UID, tanpa konsep owner).
@@ -48,15 +49,22 @@ cloud/         Package cloud — layer Tuya murni (keyed by Tuya UID, tanpa kons
                multiple-names). Tanpa ownership, tanpa enrichment — keduanya milik root.
                Domain baru → file baru (home.go, space.go).
 postgres/
-  store.go     Account management (owner -> tuya_uid): Store.Get/Link/Unlink, migrate.
-               Mengembalikan tuya.Account / tuya.ErrAccountNotLinked (import root tuya).
+  app_account.go
+               App-account management (owner -> tuya_uid): AppAccountStore.Get/Link/Unlink,
+               NewAppAccountStore, migrate. Mengembalikan tuya.AppAccount /
+               tuya.ErrAccountNotLinked (import root tuya).
   migrations/  SQL files, di-embed via //go:embed (tabel tuya_app_accounts, soft-delete deleted_at)
 firestore/
-  store.go     Account management yang sama di atas Cloud Firestore: NewAccountStore(client,
+  app_account.go
+               Hal yang sama di atas Cloud Firestore: NewAppAccountStore(client,
                opts) — satu dokumen per owner (doc ID = owner, koleksi tuya_app_accounts,
                override via WithCollection), soft-delete deleted_at, Link/Unlink transactional,
-               timestamp client-side agar Link bisa return Account tanpa re-read. Tanpa migrasi.
+               timestamp client-side agar Link bisa return AppAccount tanpa re-read. Tanpa migrasi.
 ```
+
+Nama file store = nama model tenancy juga, bukan `store.go`. Begitu model spatial masuk,
+tiap package adapter akan punya `space.go` di sebelahnya; `store.go` yang polos tidak punya
+tempat untuk itu.
 
 Dependency direction acyclic: **postgres → tuya → cloud**.
 
@@ -68,17 +76,24 @@ owner yang memegang ownership guard). Default & cara termudah untuk agent: pakai
 `tuya.AppAccountClient`.
 
 Namanya menyebut **model tenancy**, bukan sekadar verbose. Tuya punya dua: app-account
-(tiap manusia punya akun app sendiri, batas tenant = Tuya UID, butuh `AccountStore`) dan
+(tiap manusia punya akun app sendiri, batas tenant = Tuya UID, butuh `AppAccountStore`) dan
 spatial (batas tenant = root space, device di subtree di bawahnya, tanpa UID per tenant).
-Yang sudah dibungkus baru yang pertama; pintu kedua menyusul sebagai `SpaceClient`.
+Yang sudah dibungkus baru yang pertama; pintu kedua menyusul sebagai `SpaceClient` +
+`SpaceStore`.
+
+Prefix `App` juga memisahkan dua "account" yang beda: **akun app** (punya device, di-key
+uid) vs **akun project** Tuya (pemilik accessID/accessSecret). Call site tetap pendek karena
+nama variabel milik pemanggil: `app := tuya.NewAppAccountClient(...)` lalu
+`app.Account(ctx, owner)` — method-nya `Account()`, bukan `AppAccount()`, karena receiver
+sudah membawa "App" dan tipe kembaliannya yang menyatakan presisi.
 
 ```go
 // postgres.WithAutoMigrate() opsional — jalankan migration saat startup
-store, err := postgres.NewAccountStore(ctx, pool, postgres.WithAutoMigrate())
+store, err := postgres.NewAppAccountStore(ctx, pool, postgres.WithAutoMigrate())
 
 transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
 iot := cloud.NewIoT(transport)
-client := tuya.NewAppAccountClient(iot, store) // postgres.Store satisfies tuya.AccountStore
+client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
 
 // Semua resolve owner→uid + ownership guard ditangani tuya.AppAccountClient
 devices, err := client.ListDevices(ctx, owner)
@@ -151,17 +166,20 @@ Jangan pernah edit migration yang sudah di-commit.
   app_account.go). Root `ListDevices` selalu me-resolve karena hasilnya dibaca manusia (butuh
   "Kitchen light", bukan "switch_1"); consumer yang memakai `cloud.IoT` langsung menyusun
   fan-out-nya sendiri kalau memang butuh.
-- **Seam file: `cloud` per-domain, root per-pintu.** Method `IoT` ditulis di file domainnya
-  (cloud/device.go; nanti cloud/home.go, cloud/space.go), struct `IoT` + `NewIoT` di
-  cloud/client.go. Root **tidak** mengikuti pola itu: sekali ada dua model tenancy, seam
-  "tipe vs perilaku" berhenti berguna karena tiap pintu punya keduanya, dan yang benar-benar
-  berbeda adalah guard-nya. Jadi satu file per pintu (app_account.go; nanti space.go), dengan
-  tuya.go hanya memegang yang dipakai bersama. Orang yang mengaudit tenancy membaca satu file.
+- **Seam file: `cloud` per-domain, root + adapter per-model-tenancy.** Method `IoT` ditulis di
+  file domainnya (cloud/device.go; nanti cloud/home.go, cloud/space.go), struct `IoT` +
+  `NewIoT` di cloud/client.go. Root **tidak** mengikuti pola itu: sekali ada dua model
+  tenancy, seam "tipe vs perilaku" berhenti berguna karena tiap pintu punya keduanya, dan
+  yang benar-benar berbeda adalah guard-nya. Jadi satu file per pintu (app_account.go; nanti
+  space.go), dengan tuya.go hanya memegang yang dipakai bersama. Orang yang mengaudit tenancy
+  membaca satu file. `postgres/` dan `firestore/` ikut aturan yang sama — makanya
+  `app_account.go`, bukan `store.go`.
 - **`ErrDeviceNotOwned` dan `ErrAccountNotLinked` hidup di root `tuya`.** Keduanya adalah konsep
   multi-tenant / owner-scoping, bukan konsep Tuya API — tempatnya di layer yang memiliki owner.
 - **Empat concern dipisah dengan jelas.** `cloud.Client` transport; `cloud.IoT` device-addressed
-  Tuya facade; `tuya.AppAccountClient` owner-scoped facade dengan ownership guard; `postgres.Store` account mapping.
-  Interface `AccountStore` dan `IoT` didefinisikan di root `tuya` (consumer), bukan di implementor —
+  Tuya facade; `tuya.AppAccountClient` owner-scoped facade dengan ownership guard;
+  `postgres.AppAccountStore` account mapping.
+  Interface `AppAccountStore` dan `IoT` didefinisikan di root `tuya` (consumer), bukan di implementor —
   sesuai idiom Go "accept interfaces, return structs".
 - **`cloud.Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Tidak ada
   ownership guard di sini — `Do` melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis.
@@ -190,22 +208,31 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   `WithChannelNames` sempat ada di antara dua langkah itu — ia gugur sendiri begitu enrichment
   keluar dari `cloud`, karena tidak ada lagi yang perlu di-opt-out. Kalau menemukan referensi ke
   nama-nama lama di luar repo ini, itu sisa versi sebelumnya.
-- **Sejarah: `tuya.Client` di-rename jadi `tuya.AppAccountClient` pada Agustus 2026** (`tuya.New`
-  → `tuya.NewAppAccountClient`), untuk memberi tempat pintu spatial (`SpaceClient`) yang menyusul.
-  Nama pintu menyebut model tenancy-nya; begitu ada dua, `Client` tidak lagi memberitahu yang mana.
-  Sekalian root disusun ulang per-pintu: `client.go` + `device.go` → `tuya.go` (yang dipakai
-  bersama) + `app_account.go` (pintu app-account, utuh). Ini breaking change, rilis v0.7.0.
-  Referensi ke `tuya.Client`/`tuya.New` di luar repo ini adalah sisa versi ≤ v0.6.x —
-  `go.naturallyfunny.dev/agentkit` salah satunya, dan perlu disesuaikan saat versinya dinaikkan.
+- **Sejarah: seluruh surface app-account diberi nama model tenancy-nya, Agustus 2026.** Nama
+  lama → baru: `tuya.Client` → `tuya.AppAccountClient`, `tuya.New` →
+  `tuya.NewAppAccountClient`, `tuya.Account` → `tuya.AppAccount`, `tuya.AccountStore` →
+  `tuya.AppAccountStore`, `postgres.Store`/`firestore.Store` → `AppAccountStore` di kedua
+  package, `NewAccountStore` → `NewAppAccountStore`. File `postgres/store.go` dan
+  `firestore/store.go` → `app_account.go`; di root `client.go` + `device.go` → `tuya.go`
+  (yang dipakai bersama) + `app_account.go`.
+  Alasannya dua: memberi tempat pintu spatial (`SpaceClient` + `SpaceStore`) yang menyusul —
+  begitu ada dua, `Client`/`Store` polos tidak lagi memberitahu yang mana — dan menghapus
+  ambiguitas "account" antara akun app dan akun project Tuya.
+  Method-nya tetap `Account()`, bukan `AppAccount()`: receiver sudah membawa "App", dan
+  `app.AppAccount(...)` stutter. `postgres.AppAccountStore` sengaja senama dengan interface
+  `tuya.AppAccountStore`; tabrakan hanya ada di prosa, di kode selalu ada kualifikasi package.
+  Ini breaking change, rilis v0.7.0. Referensi ke nama-nama lama di luar repo ini adalah sisa
+  versi ≤ v0.6.x — `go.naturallyfunny.dev/agentkit` salah satunya (pakai `tuya.Client` dan
+  `tuya.Account` di `tuya/adk/toolset.go`), dan perlu disesuaikan saat versinya dinaikkan.
 
 ## Conventions
 
 - `cloud.New(...)` mengembalikan `*cloud.Client` (transport); `cloud.NewIoT(c)` membungkusnya jadi `*cloud.IoT` (facade domain)
 - `tuya.NewAppAccountClient(iot, store)` mengembalikan `*tuya.AppAccountClient` (root, pintu owner-scoped model app-account); `iot` diterima sebagai interface `tuya.IoT`
-- Nama pintu di root = nama model tenancy Tuya. `AppAccountClient` sekarang; `SpaceClient` menyusul. Jangan pakai nama generik `Client` di root.
-- `Account`, `ErrAccountNotLinked`, `ErrDeviceNotOwned`, interface `AccountStore` & `IoT` hidup di root `tuya` (consumer side)
-- `postgres.Store` mengimplementasikan `tuya.AccountStore`, mengembalikan `tuya.Account` (import root `tuya`)
-- `postgres.NewAccountStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
+- Nama pintu & store = nama model tenancy Tuya. `AppAccountClient`/`AppAccountStore` sekarang; `SpaceClient`/`SpaceStore` menyusul. Jangan pakai nama generik `Client` atau `Store`.
+- `AppAccount`, `ErrAccountNotLinked`, `ErrDeviceNotOwned`, interface `AppAccountStore` & `IoT` hidup di root `tuya` (consumer side)
+- `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile.
+- `postgres.NewAppAccountStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
 - `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup
-- Tiga package: root `tuya` (owner-scoped) + `cloud/` (Tuya murni) + `postgres/`; tidak ada `pkg/`
+- Empat package: root `tuya` (owner-scoped) + `cloud/` (Tuya murni) + `postgres/` + `firestore/`; tidak ada `pkg/`
 - Conventional commits: `feat:`, `fix:`, `chore(migrate):` dst

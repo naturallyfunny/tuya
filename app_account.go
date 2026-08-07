@@ -16,10 +16,14 @@ import (
 // door, because what differs between doors is the guard, and whoever audits
 // tenancy should read one file rather than assemble it from two.
 
-// Account links an opaque owner (whatever the consumer uses to identify a
+// AppAccount links an opaque owner (whatever the consumer uses to identify a
 // human) to that human's Tuya app-account UID. Devices are listed and controlled
 // under the UID.
-type Account struct {
+//
+// "App account" is Tuya's own term, and the qualifier earns its keep: a project
+// account (the holder of the accessID/accessSecret) is a different thing
+// entirely, and a bare Account would not say which one this is.
+type AppAccount struct {
 	Owner     string    `json:"owner"`
 	TuyaUID   string    `json:"tuya_uid"`
 	CreatedAt time.Time `json:"created_at"`
@@ -32,12 +36,12 @@ type Account struct {
 // linking flow.
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
-// AccountStore resolves and manages the owner -> Tuya UID mapping. Get reads it,
-// Link creates or refreshes it, and Unlink removes it. postgres.Store satisfies
-// this interface implicitly; consumers may supply any backend.
-type AccountStore interface {
-	Get(ctx context.Context, owner string) (Account, error)
-	Link(ctx context.Context, owner, tuyaUID string) (Account, error)
+// AppAccountStore resolves and manages the owner -> Tuya UID mapping. Get reads it,
+// Link creates or refreshes it, and Unlink removes it. postgres.AppAccountStore
+// satisfies this interface implicitly; consumers may supply any backend.
+type AppAccountStore interface {
+	Get(ctx context.Context, owner string) (AppAccount, error)
+	Link(ctx context.Context, owner, tuyaUID string) (AppAccount, error)
 	Unlink(ctx context.Context, owner string) error
 }
 
@@ -49,20 +53,23 @@ type AccountStore interface {
 // (trust-all) IoT layer.
 type AppAccountClient struct {
 	iot   IoT
-	store AccountStore
+	store AppAccountStore
 }
 
 // NewAppAccountClient builds an AppAccountClient over the IoT facade and an
-// account store. cloud.NewIoT returns a *cloud.IoT that satisfies IoT, and
-// postgres.Store satisfies AccountStore, but any implementations of the
-// interfaces work.
-func NewAppAccountClient(iot IoT, store AccountStore) *AppAccountClient {
+// app-account store. cloud.NewIoT returns a *cloud.IoT that satisfies IoT, and
+// postgres.AppAccountStore satisfies AppAccountStore, but any implementations of
+// the interfaces work.
+func NewAppAccountClient(iot IoT, store AppAccountStore) *AppAccountClient {
 	return &AppAccountClient{iot: iot, store: store}
 }
 
 // Account returns the linked Tuya app account for the owner. Useful for surfaces
 // that need to surface the owner / Tuya-UID mapping (e.g. a get_account tool).
-func (c *AppAccountClient) Account(ctx context.Context, owner string) (Account, error) {
+//
+// The receiver already says "app account", so the method does not repeat it; the
+// return type is what states the precision.
+func (c *AppAccountClient) Account(ctx context.Context, owner string) (AppAccount, error) {
 	return c.store.Get(ctx, owner)
 }
 

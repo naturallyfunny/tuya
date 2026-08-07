@@ -1,5 +1,5 @@
-// Package firestore provides a Cloud Firestore-backed account mapping for the
-// Tuya library: the owner → Tuya-UID link a consumer resolves (via
+// Package firestore provides a Cloud Firestore-backed app-account mapping for
+// the Tuya library: the owner → Tuya-UID link a consumer resolves (via
 // tuya.AppAccountClient) before driving devices.
 //
 // Each owner maps to one document in a single collection (DefaultCollection
@@ -39,8 +39,8 @@ type accountDoc struct {
 
 // account maps the document back to the domain type, restoring the owner that
 // lives in the document ID.
-func (d accountDoc) account(owner string) tuya.Account {
-	return tuya.Account{
+func (d accountDoc) account(owner string) tuya.AppAccount {
+	return tuya.AppAccount{
 		Owner:     owner,
 		TuyaUID:   d.TuyaUID,
 		CreatedAt: d.CreatedAt,
@@ -48,36 +48,37 @@ func (d accountDoc) account(owner string) tuya.Account {
 	}
 }
 
-// Store maps an owner to the human's Tuya account UID, backed by Cloud
-// Firestore. It owns the full lifecycle of that mapping: Get reads it, Link
+// AppAccountStore maps an owner to the human's Tuya app-account UID, backed by
+// Cloud Firestore. It owns the full lifecycle of that mapping: Get reads it, Link
 // creates or refreshes it, and Unlink soft-deletes it. A consumer links an
 // account once (after the human authorizes Tuya), then drives devices by owner
 // via tuya.AppAccountClient, which resolves owner -> UID with Get. That is the
-// app-account tenancy model; Tuya's spatial model needs no such mapping.
-type Store struct {
+// app-account tenancy model; Tuya's spatial model needs no such mapping, and
+// will bring its own SpaceStore rather than widening this one.
+type AppAccountStore struct {
 	client     *firestore.Client
 	collection string
 }
 
-// Option configures a Store.
-type Option func(*Store)
+// Option configures an AppAccountStore.
+type Option func(*AppAccountStore)
 
 // WithCollection stores accounts in the named collection instead of
 // DefaultCollection. Use it when one Firestore database hosts several
 // environments or apps.
 func WithCollection(name string) Option {
-	return func(s *Store) { s.collection = name }
+	return func(s *AppAccountStore) { s.collection = name }
 }
 
-// NewAccountStore builds a Store over an existing *firestore.Client the
-// consumer already owns (and stays responsible for closing). No I/O happens
-// here — Firestore needs no schema, so there is no migrate step and no error
-// to return, unlike the postgres sibling.
-func NewAccountStore(client *firestore.Client, opts ...Option) *Store {
+// NewAppAccountStore builds an AppAccountStore over an existing
+// *firestore.Client the consumer already owns (and stays responsible for
+// closing). No I/O happens here — Firestore needs no schema, so there is no
+// migrate step and no error to return, unlike the postgres sibling.
+func NewAppAccountStore(client *firestore.Client, opts ...Option) *AppAccountStore {
 	if client == nil {
-		panic("firestore: NewAccountStore called with nil client")
+		panic("firestore: NewAppAccountStore called with nil client")
 	}
-	s := &Store{client: client, collection: DefaultCollection}
+	s := &AppAccountStore{client: client, collection: DefaultCollection}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -86,24 +87,24 @@ func NewAccountStore(client *firestore.Client, opts ...Option) *Store {
 
 // Get returns the full Account linked to owner, or tuya.ErrAccountNotLinked if
 // none is linked.
-func (s *Store) Get(ctx context.Context, owner string) (tuya.Account, error) {
+func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.Account{}, err
+		return tuya.AppAccount{}, err
 	}
 	snap, err := ref.Get(ctx)
 	if status.Code(err) == codes.NotFound {
-		return tuya.Account{}, tuya.ErrAccountNotLinked
+		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
 	}
 	if err != nil {
-		return tuya.Account{}, fmt.Errorf("get account: %w", err)
+		return tuya.AppAccount{}, fmt.Errorf("get account: %w", err)
 	}
 	var doc accountDoc
 	if err := snap.DataTo(&doc); err != nil {
-		return tuya.Account{}, fmt.Errorf("get account: decode %q: %w", owner, err)
+		return tuya.AppAccount{}, fmt.Errorf("get account: decode %q: %w", owner, err)
 	}
 	if doc.DeletedAt != nil {
-		return tuya.Account{}, tuya.ErrAccountNotLinked
+		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
 	}
 	return doc.account(owner), nil
 }
@@ -113,12 +114,12 @@ func (s *Store) Get(ctx context.Context, owner string) (tuya.Account, error) {
 // updated_at, and re-linking a previously unlinked owner revives the document
 // (clearing deleted_at). The read-then-write runs in a transaction so
 // concurrent links serialize instead of clobbering each other's created_at.
-func (s *Store) Link(ctx context.Context, owner, tuyaUID string) (tuya.Account, error) {
+func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya.AppAccount, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.Account{}, err
+		return tuya.AppAccount{}, err
 	}
-	var acc tuya.Account
+	var acc tuya.AppAccount
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		// Timestamps are written client-side rather than as ServerTimestamp
 		// sentinels: a sentinel's value is unknown until after commit, and Link
@@ -144,7 +145,7 @@ func (s *Store) Link(ctx context.Context, owner, tuyaUID string) (tuya.Account, 
 		return tx.Set(ref, doc)
 	})
 	if err != nil {
-		return tuya.Account{}, fmt.Errorf("link account: %w", err)
+		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
 	}
 	return acc, nil
 }
@@ -152,7 +153,7 @@ func (s *Store) Link(ctx context.Context, owner, tuyaUID string) (tuya.Account, 
 // Unlink soft-deletes the mapping for owner (setting deleted_at), so Get stops
 // returning it while the document is preserved for audit. Returns
 // tuya.ErrAccountNotLinked if no live mapping exists.
-func (s *Store) Unlink(ctx context.Context, owner string) error {
+func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return err
@@ -189,7 +190,7 @@ func (s *Store) Unlink(ctx context.Context, owner string) error {
 
 // doc resolves owner to its document reference, rejecting owners that cannot
 // be Firestore document IDs.
-func (s *Store) doc(owner string) (*firestore.DocumentRef, error) {
+func (s *AppAccountStore) doc(owner string) (*firestore.DocumentRef, error) {
 	if err := validateOwner(owner); err != nil {
 		return nil, err
 	}
@@ -216,4 +217,4 @@ func validateOwner(owner string) error {
 	return nil
 }
 
-var _ tuya.AccountStore = (*Store)(nil)
+var _ tuya.AppAccountStore = (*AppAccountStore)(nil)

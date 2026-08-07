@@ -14,12 +14,18 @@
 //
 // There is a door per Tuya tenancy model, and its type name says which model it
 // speaks. AppAccountClient is the app-account model: every human holds their own
-// Tuya app account, the tenant boundary is a Tuya UID, and an AccountStore maps
-// owner -> UID (ready-made ones live in the postgres and firestore subpackages).
-// Tuya's second model is spatial — the boundary is a root space, devices live in
-// the subtree beneath it, and there is no per-tenant UID at all; its door will
-// land here as SpaceClient. The names are long on purpose: with two models in one
-// package, "Client" would no longer tell a reader which one they hold.
+// Tuya app account, the tenant boundary is a Tuya UID, and an AppAccountStore
+// maps owner -> UID (ready-made ones live in the postgres and firestore
+// subpackages). Tuya's second model is spatial — the boundary is a root space,
+// devices live in the subtree beneath it, and there is no per-tenant UID at all;
+// its door will land here as SpaceClient, with a SpaceStore beside it.
+//
+// The names are long on purpose. With two models in one package "Client" would no
+// longer tell a reader which one they hold, and "account" alone is ambiguous here:
+// a Tuya app account (holds devices, keyed by UID) is not a Tuya project account
+// (holds the accessID/accessSecret). Call sites stay short, because the variable
+// name belongs to the caller: app := tuya.NewAppAccountClient(...) reads as
+// app.Account(ctx, owner).
 //
 // Dependency direction is acyclic: postgres -> tuya -> cloud.
 package tuya

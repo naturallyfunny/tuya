@@ -70,20 +70,26 @@ Three composable tiers. Bind the one your caller needs:
 | Your own owner ID, want ownership enforced              | `tuya.AppAccountClient` | **yes**  |
 
 - **`tuya.AppAccountClient`** — the owner-scoped door. Resolves owner → Tuya UID through an
-  `AccountStore`, asserts the target device belongs to that account (a lean, unenriched
-  listing plus a membership check), then delegates. It owns `Account`,
-  `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AccountStore` / `IoT` interfaces it
+  `AppAccountStore`, asserts the target device belongs to that account (a lean, unenriched
+  listing plus a membership check), then delegates. It owns `AppAccount`,
+  `ErrAccountNotLinked`, `ErrDeviceNotOwned`, and the `AppAccountStore` / `IoT` interfaces it
   drives — including the ownership check itself, which is built here from plain `cloud`
   primitives rather than asked of `cloud`.
 
   The name states a **tenancy model**, not verbosity. Tuya has two, and they differ in what
   a tenant *is*. `AppAccountClient` is the app-account model: every human holds their own
-  Tuya app account, so the boundary is a Tuya UID and a store maps owner → UID. The second
-  is spatial — the boundary is a root space, devices live in the subtree beneath it, and
-  there is no per-tenant UID at all; it is the model Tuya recommends for multi-tenant
-  property (hotels, apartments). Its door will arrive as `SpaceClient` (see
-  [roadmap](#status--roadmap)), and at that point a bare `Client` would no longer say which
-  model you are holding.
+  Tuya app account, so the boundary is a Tuya UID and an `AppAccountStore` maps owner → UID.
+  The second is spatial — the boundary is a root space, devices live in the subtree beneath
+  it, and there is no per-tenant UID at all; it is the model Tuya recommends for multi-tenant
+  property (hotels, apartments). Its door will arrive as `SpaceClient` with a `SpaceStore`
+  beside it (see [roadmap](#status--roadmap)), and at that point a bare `Client` would no
+  longer say which model you are holding.
+
+  The `App` prefix does a second job: *account* alone is ambiguous here. A Tuya **app
+  account** holds devices and is keyed by UID; a Tuya **project account** holds the
+  `accessID` / `accessSecret`. Naming the first one precisely is what keeps the two apart.
+  Call sites stay short, because the variable name is yours —
+  `app := tuya.NewAppAccountClient(...)` then `app.Account(ctx, owner)`.
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
@@ -93,13 +99,18 @@ Three composable tiers. Bind the one your caller needs:
   request and nothing is composed behind your back. No ownership guard; a holder can reach any
   device the project can. Guarding it is the root package's job.
 
-Two ready-made `AccountStore` adapters ship in-tree — pick one, or implement the interface
+Two ready-made `AppAccountStore` adapters ship in-tree — pick one, or implement the interface
 yourself:
 
-- **`postgres.Store`** — the owner → UID mapping in PostgreSQL (`pgx`), with an embedded
-  migration runner.
-- **`firestore.Store`** — the same contract on Cloud Firestore: one document per owner,
-  no migrations.
+- **`postgres.AppAccountStore`** — the owner → UID mapping in PostgreSQL (`pgx`), with an
+  embedded migration runner.
+- **`firestore.AppAccountStore`** — the same contract on Cloud Firestore: one document per
+  owner, no migrations.
+
+Each adapter deliberately reuses the interface's name rather than a plain `Store`. When the
+spatial model lands, both packages will hold a `SpaceStore` too, and `postgres.Store` would
+have had nowhere left to go. The names only collide in prose; in code the package always
+qualifies them.
 
 Dependency direction is acyclic and points inward — adapters depend on the root, the root
 depends on `cloud`, and `cloud` depends on nothing of ours:
@@ -114,7 +125,7 @@ firestore ─┘
 
 ```go
 // 1. An owner → Tuya-UID store. PostgreSQL:
-store, err := postgres.NewAccountStore(ctx, pool, postgres.WithAutoMigrate())
+store, err := postgres.NewAppAccountStore(ctx, pool, postgres.WithAutoMigrate())
 if err != nil {
     log.Fatal(err)
 }
@@ -125,7 +136,7 @@ if err != nil {
 //       "go.naturallyfunny.dev/tuya/firestore"
 //   )
 //   fs, _ := gcfs.NewClient(ctx, projectID)
-//   store := firestore.NewAccountStore(fs)
+//   store := firestore.NewAppAccountStore(fs)
 
 // 2. The Tuya transport + device facade. baseURL selects the region.
 transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
@@ -135,7 +146,7 @@ if err != nil {
 iot := cloud.NewIoT(transport)
 
 // 3. The owner-scoped door, for the app-account tenancy model.
-client := tuya.NewAppAccountClient(iot, store) // postgres.Store satisfies tuya.AccountStore
+client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
 ```
 
 `cloud.New` prefetches an access token, so a bad credential or unreachable region fails here,
@@ -195,10 +206,10 @@ channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels,
 
 ## Linking accounts
 
-Both stores own the full lifecycle of the owner → Tuya-UID mapping. `Link` is an upsert
-(re-linking refreshes the UID; re-linking a previously unlinked owner revives the row rather
-than colliding on the key); `Unlink` is a soft-delete (`deleted_at`), so `Get` stops
-returning it while the record is preserved for audit.
+Both `AppAccountStore` adapters own the full lifecycle of the owner → Tuya-UID mapping.
+`Link` is an upsert (re-linking refreshes the UID; re-linking a previously unlinked owner
+revives the row rather than colliding on the key); `Unlink` is a soft-delete (`deleted_at`),
+so `Get` stops returning it while the record is preserved for audit.
 
 ```go
 acc, err := store.Link(ctx, owner, tuyaUID)   // upsert
@@ -213,7 +224,7 @@ timestamps, `deleted_at`); Firestore with a `tuya_app_accounts` collection (over
 
 A small custom runner, not `golang-migrate`. SQL files are embedded (`//go:embed`); versions
 are tracked in `tuya_schema_migrations`. `WithAutoMigrate()` applies pending migrations on
-startup. Without it, `NewAccountStore` validates the schema exists and fails fast if the
+startup. Without it, `NewAppAccountStore` validates the schema exists and fails fast if the
 consumer forgot to migrate.
 
 ## Design rationale
@@ -239,7 +250,7 @@ Each one is a domain or usage constraint, not an oversight.
   `cloud.NewIoT` returns a concrete `*cloud.IoT`. The root package declares `tuya.IoT` as
   narrowly as its doors need, and `*cloud.IoT` satisfies it structurally. This is
   "accept interfaces, return structs" applied literally — mocking is the consumer's concern,
-  so `app_account_test.go` fakes `tuya.IoT` and `tuya.AccountStore` with zero test-only code in
+  so `app_account_test.go` fakes `tuya.IoT` and `tuya.AppAccountStore` with zero test-only code in
   `cloud`. Exporting a speculative interface from `cloud` would only add a
   compatibility burden that widens with every new domain.
 
@@ -337,7 +348,7 @@ go test ./...
 ```
 
 The root `tuya` package — the ownership boundary, where a bug means a device reaches the wrong
-owner — is unit-tested against fake `IoT` and `AccountStore` implementations: happy paths,
+owner — is unit-tested against fake `IoT` and `AppAccountStore` implementations: happy paths,
 `ErrAccountNotLinked` / `ErrDeviceNotOwned`, the short-circuit guards (a command must never
 reach an unowned device), and the cost guard (an ownership check must never trigger
 channel-name requests). That suite covers **93.0%** of the package's statements. The Firestore
@@ -360,22 +371,23 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 - **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
 - **The dependency cost is opt-in.** The root `tuya` package and the `cloud` layer import
-  **only the standard library** — bind those, bring your own `AccountStore`, and you add nothing
+  **only the standard library** — bind those, bring your own `AppAccountStore`, and you add nothing
   to your module graph. The external dependencies (`jackc/pgx` for `postgres`;
   `cloud.google.com/go/firestore` and gRPC for `firestore`) are compiled only if you import that
   store subpackage.
 
 ## Layout
 
-The root package is split **per door**, not per kind of declaration. What differs between
-tenancy models is the guard — the riskiest code here — so it should be readable in one file
-rather than assembled from a types file and a behavior file.
+Every package is split **per tenancy model**, not per kind of declaration. What differs
+between models is the guard — the riskiest code here — so it should be readable in one file
+rather than assembled from a types file and a behavior file. The store adapters follow the
+same rule, which is why they are `app_account.go` and not `store.go`.
 
 ```
 tuya.go          Package doc, the consumer-side IoT interface, ErrDeviceNotOwned.
                  What both doors share.
-app_account.go   The app-account door, end to end: Account, ErrAccountNotLinked,
-                 AccountStore, AppAccountClient and its device operations —
+app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLinked,
+                 AppAccountStore, AppAccountClient and its device operations —
                  the ownership guard, and the channel-name fan-out with the
                  multi-gang judgement it needs. (space.go joins it later.)
 cloud/
@@ -383,10 +395,10 @@ cloud/
   auth.go        request signing + token lifecycle.
   device.go      typed Device/DataPoint/Channel + one method per device endpoint.
 postgres/
-  store.go       AccountStore on PostgreSQL + embedded migration runner.
+  app_account.go AppAccountStore on PostgreSQL + embedded migration runner.
   migrations/    embedded .up.sql / .down.sql.
 firestore/
-  store.go       AccountStore on Cloud Firestore (schemaless, no migrations).
+  app_account.go AppAccountStore on Cloud Firestore (schemaless, no migrations).
 ```
 
 ## Status & roadmap
@@ -399,7 +411,8 @@ stores. Remaining work is additive:
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device control (`cloud/home.go`, `cloud/space.go`), added as
       new files on `cloud.IoT`.
-- [ ] `SpaceClient` — the door for Tuya's spatial tenancy model, alongside `AppAccountClient`.
+- [ ] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial tenancy model, alongside
+      `AppAccountClient` / `AppAccountStore`.
       Its guard depends on whether Tuya's space query returns a whole subtree or one level,
       so it waits on `cloud/space.go`.
 - [ ] Ownership-check caching — deferred until a real throughput need justifies the invalidation

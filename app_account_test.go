@@ -11,20 +11,20 @@ import (
 	"go.naturallyfunny.dev/tuya/cloud"
 )
 
-// fakeStore is an in-memory AccountStore. Only Get is exercised; Link/Unlink
+// fakeStore is an in-memory AppAccountStore. Only Get is exercised; Link/Unlink
 // panic so an accidental call is loud.
 type fakeStore struct {
-	acc      tuya.Account
+	acc      tuya.AppAccount
 	err      error
 	gotOwner string
 }
 
-func (f *fakeStore) Get(_ context.Context, owner string) (tuya.Account, error) {
+func (f *fakeStore) Get(_ context.Context, owner string) (tuya.AppAccount, error) {
 	f.gotOwner = owner
 	return f.acc, f.err
 }
 
-func (f *fakeStore) Link(context.Context, string, string) (tuya.Account, error) {
+func (f *fakeStore) Link(context.Context, string, string) (tuya.AppAccount, error) {
 	panic("Link not expected in these tests")
 }
 
@@ -89,8 +89,8 @@ func (f *fakeIoT) SendCommands(_ context.Context, deviceID string, cmds []cloud.
 	return f.sendErr
 }
 
-func linkedAccount() tuya.Account {
-	return tuya.Account{Owner: "owner-1", TuyaUID: "uid-1"}
+func linkedAccount() tuya.AppAccount {
+	return tuya.AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
 // ownedDevices is the account listing the guard sees when dev-1 belongs to the
