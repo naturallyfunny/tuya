@@ -20,7 +20,7 @@ adalah guard-nya — bagian paling berisiko di library ini — jadi ia harus ter
 file, bukan dirakit dari file tipe + file perilaku.
 
 ```
-tuya.go        (root, package tuya) Yang dipakai semua pintu: package doc, interface IoT
+iot.go         (root, package tuya) Yang dipakai semua pintu: package doc, interface IoT
                (di-satisfy *cloud.IoT), ErrDeviceNotOwned. Tidak ada pintu di sini.
 app_account.go (root) Pintu app-account, utuh: AppAccount, ErrAccountNotLinked,
                AppAccountStore interface, struct AppAccountClient + NewAppAccountClient
@@ -36,7 +36,8 @@ app_account_test.go
                AppAccountStore: happy path + ErrAccountNotLinked / ErrDeviceNotOwned,
                short-circuit guard, resolusi channel-name, dan bukti guard tidak ikut
                menembak multiple-names.
-cloud/         Package cloud — layer Tuya murni (keyed by Tuya UID, tanpa konsep owner).
+cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. Sebagian besar
+               device-addressed; hanya ListDevices yang butuh Tuya UID.
   client.go    cloud.Client (transport: token cache/refresh app-level, HMAC-SHA256 signing, Do
                dengan retry-on-1010) + IoT (facade, membungkus *Client) + NewIoT.
                Operasi domain menempel di IoT tapi DITULIS di file domain masing-masing.
@@ -171,7 +172,7 @@ Jangan pernah edit migration yang sudah di-commit.
   `NewIoT` di cloud/client.go. Root **tidak** mengikuti pola itu: sekali ada dua model
   tenancy, seam "tipe vs perilaku" berhenti berguna karena tiap pintu punya keduanya, dan
   yang benar-benar berbeda adalah guard-nya. Jadi satu file per pintu (app_account.go; nanti
-  space.go), dengan tuya.go hanya memegang yang dipakai bersama. Orang yang mengaudit tenancy
+  space.go), dengan iot.go hanya memegang yang dipakai bersama. Orang yang mengaudit tenancy
   membaca satu file. `postgres/` dan `firestore/` ikut aturan yang sama — makanya
   `app_account.go`, bukan `store.go`.
 - **`ErrDeviceNotOwned` dan `ErrAccountNotLinked` hidup di root `tuya`.** Keduanya adalah konsep
@@ -214,7 +215,8 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   `tuya.AppAccountStore`, `postgres.Store`/`firestore.Store` → `AppAccountStore` di kedua
   package, `NewAccountStore` → `NewAppAccountStore`. File `postgres/store.go` dan
   `firestore/store.go` → `app_account.go`; di root `client.go` + `device.go` → `tuya.go`
-  (yang dipakai bersama) + `app_account.go`.
+  (yang dipakai bersama) + `app_account.go`. `tuya.go` menyusul jadi `iot.go`, mengikuti
+  interface `IoT` yang dipegangnya.
   Alasannya dua: memberi tempat pintu spatial (`SpaceClient` + `SpaceStore`) yang menyusul —
   begitu ada dua, `Client`/`Store` polos tidak lagi memberitahu yang mana — dan menghapus
   ambiguitas "account" antara akun app dan akun project Tuya.
