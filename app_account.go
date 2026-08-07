@@ -12,18 +12,18 @@ import (
 )
 
 type AppAccount struct {
-	Owner     string    `json:"owner"`
-	TuyaUID   string    `json:"tuya_uid"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Owner     Owner         `json:"owner"`
+	TuyaUID   cloud.TuyaUID `json:"tuya_uid"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
 }
 
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
 type AppAccountStore interface {
-	Get(ctx context.Context, owner string) (AppAccount, error)
-	Link(ctx context.Context, owner, tuyaUID string) (AppAccount, error)
-	Unlink(ctx context.Context, owner string) error
+	Get(ctx context.Context, owner Owner) (AppAccount, error)
+	Link(ctx context.Context, owner Owner, tuyaUID cloud.TuyaUID) (AppAccount, error)
+	Unlink(ctx context.Context, owner Owner) error
 }
 
 type AppAccountClient struct {
@@ -35,11 +35,11 @@ func NewAppAccountClient(iot IoT, store AppAccountStore) *AppAccountClient {
 	return &AppAccountClient{iot: iot, store: store}
 }
 
-func (c *AppAccountClient) Account(ctx context.Context, owner string) (AppAccount, error) {
+func (c *AppAccountClient) Account(ctx context.Context, owner Owner) (AppAccount, error) {
 	return c.store.Get(ctx, owner)
 }
 
-func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]cloud.Device, error) {
+func (c *AppAccountClient) ListDevices(ctx context.Context, owner Owner) ([]cloud.Device, error) {
 	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]clo
 	return devices, nil
 }
 
-func (c *AppAccountClient) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
+func (c *AppAccountClient) HasDevice(ctx context.Context, owner Owner, deviceID cloud.DeviceID) (bool, error) {
 	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return false, err

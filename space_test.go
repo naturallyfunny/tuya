@@ -20,19 +20,19 @@ const (
 type fakeSpaceStore struct {
 	space    tuya.Space
 	err      error
-	gotOwner string
+	gotOwner tuya.Owner
 }
 
-func (f *fakeSpaceStore) Get(_ context.Context, owner string) (tuya.Space, error) {
+func (f *fakeSpaceStore) Get(_ context.Context, owner tuya.Owner) (tuya.Space, error) {
 	f.gotOwner = owner
 	return f.space, f.err
 }
 
-func (f *fakeSpaceStore) Link(context.Context, string, cloud.SpaceID) (tuya.Space, error) {
+func (f *fakeSpaceStore) Link(context.Context, tuya.Owner, cloud.SpaceID) (tuya.Space, error) {
 	panic("Link not expected in these tests")
 }
 
-func (f *fakeSpaceStore) Unlink(context.Context, string) error {
+func (f *fakeSpaceStore) Unlink(context.Context, tuya.Owner) error {
 	panic("Unlink not expected in these tests")
 }
 

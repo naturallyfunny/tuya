@@ -12,18 +12,19 @@ import (
 	"google.golang.org/grpc/status"
 
 	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/cloud"
 )
 
 const DefaultAppAccountCollection = "tuya_app_accounts"
 
 type accountDoc struct {
-	TuyaUID   string     `firestore:"tuya_uid"`
-	CreatedAt time.Time  `firestore:"created_at"`
-	UpdatedAt time.Time  `firestore:"updated_at"`
-	DeletedAt *time.Time `firestore:"deleted_at"`
+	TuyaUID   cloud.TuyaUID `firestore:"tuya_uid"`
+	CreatedAt time.Time     `firestore:"created_at"`
+	UpdatedAt time.Time     `firestore:"updated_at"`
+	DeletedAt *time.Time    `firestore:"deleted_at"`
 }
 
-func (d accountDoc) account(owner string) tuya.AppAccount {
+func (d accountDoc) account(owner tuya.Owner) tuya.AppAccount {
 	return tuya.AppAccount{
 		Owner:     owner,
 		TuyaUID:   d.TuyaUID,
@@ -68,7 +69,7 @@ func NewAppAccountStore(client *firestore.Client, opts ...Option) *AppAccountSto
 	}
 }
 
-func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Get(ctx context.Context, owner tuya.Owner) (tuya.AppAccount, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return tuya.AppAccount{}, err
@@ -90,7 +91,7 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccoun
 	return doc.account(owner), nil
 }
 
-func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Link(ctx context.Context, owner tuya.Owner, tuyaUID cloud.TuyaUID) (tuya.AppAccount, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return tuya.AppAccount{}, err
@@ -120,7 +121,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya
 	return acc, nil
 }
 
-func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
+func (s *AppAccountStore) Unlink(ctx context.Context, owner tuya.Owner) error {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return err
@@ -155,24 +156,24 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	return nil
 }
 
-func (s *AppAccountStore) doc(owner string) (*firestore.DocumentRef, error) {
+func (s *AppAccountStore) doc(owner tuya.Owner) (*firestore.DocumentRef, error) {
 	if err := validateOwner(owner); err != nil {
 		return nil, err
 	}
-	return s.client.Collection(s.collection).Doc(owner), nil
+	return s.client.Collection(s.collection).Doc(string(owner)), nil
 }
 
-func validateOwner(owner string) error {
+func validateOwner(owner tuya.Owner) error {
 	switch {
 	case owner == "":
 		return errors.New("firestore: owner is empty")
 	case owner == "." || owner == "..":
 		return fmt.Errorf("firestore: owner %q is a reserved document ID", owner)
-	case strings.Contains(owner, "/"):
+	case strings.Contains(string(owner), "/"):
 		return fmt.Errorf("firestore: owner %q contains '/', not allowed in a document ID", owner)
 	case len(owner) > 1500:
 		return fmt.Errorf("firestore: owner exceeds Firestore's 1500-byte document ID limit (%d bytes)", len(owner))
-	case len(owner) >= 4 && strings.HasPrefix(owner, "__") && strings.HasSuffix(owner, "__"):
+	case len(owner) >= 4 && strings.HasPrefix(string(owner), "__") && strings.HasSuffix(string(owner), "__"):
 		return fmt.Errorf("firestore: owner %q matches Firestore's reserved __*__ document ID pattern", owner)
 	}
 	return nil

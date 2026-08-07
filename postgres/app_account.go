@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/cloud"
 )
 
 var migrationFiles embed.FS
@@ -63,18 +64,15 @@ func prepareSchema(ctx context.Context, db Querier, opts []Option, validate func
 	return validate(ctx)
 }
 
-func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Get(ctx context.Context, owner tuya.Owner) (tuya.AppAccount, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner = $1 AND deleted_at IS NULL`,
-		owner,
+		string(owner),
 	)
 	if err != nil {
 		return tuya.AppAccount{}, fmt.Errorf("get account: %w", err)
 	}
-	acc, err := pgx.CollectOneRow(rows, func(row pgx.CollectableRow) (tuya.AppAccount, error) {
-		var a tuya.AppAccount
-		return a, row.Scan(&a.Owner, &a.TuyaUID, &a.CreatedAt, &a.UpdatedAt)
-	})
+	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
 	}
@@ -84,34 +82,31 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccoun
 	return acc, nil
 }
 
-func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Link(ctx context.Context, owner tuya.Owner, tuyaUID cloud.TuyaUID) (tuya.AppAccount, error) {
 	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_app_accounts (owner, tuya_uid)
 		 VALUES ($1, $2)
 		 ON CONFLICT (owner) DO UPDATE
 		   SET tuya_uid = EXCLUDED.tuya_uid, updated_at = NOW(), deleted_at = NULL
 		 RETURNING owner, tuya_uid, created_at, updated_at`,
-		owner, tuyaUID,
+		string(owner), string(tuyaUID),
 	)
 	if err != nil {
 		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
 	}
-	acc, err := pgx.CollectOneRow(rows, func(row pgx.CollectableRow) (tuya.AppAccount, error) {
-		var a tuya.AppAccount
-		return a, row.Scan(&a.Owner, &a.TuyaUID, &a.CreatedAt, &a.UpdatedAt)
-	})
+	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
 	if err != nil {
 		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
 	}
 	return acc, nil
 }
 
-func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
+func (s *AppAccountStore) Unlink(ctx context.Context, owner tuya.Owner) error {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE tuya_app_accounts
 		   SET deleted_at = NOW(), updated_at = NOW()
 		 WHERE owner = $1 AND deleted_at IS NULL`,
-		owner,
+		string(owner),
 	)
 	if err != nil {
 		return fmt.Errorf("unlink account: %w", err)
@@ -120,6 +115,20 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 		return tuya.ErrAccountNotLinked
 	}
 	return nil
+}
+
+func scanAppAccount(row pgx.CollectableRow) (tuya.AppAccount, error) {
+	var (
+		acc     tuya.AppAccount
+		owner   string
+		tuyaUID string
+	)
+	if err := row.Scan(&owner, &tuyaUID, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+		return tuya.AppAccount{}, err
+	}
+	acc.Owner = tuya.Owner(owner)
+	acc.TuyaUID = cloud.TuyaUID(tuyaUID)
+	return acc, nil
 }
 
 func migrate(ctx context.Context, db Querier) error {

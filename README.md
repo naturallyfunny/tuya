@@ -122,6 +122,25 @@ Three composable tiers. Bind the one your caller needs:
   Device commands go through here — they are addressed by device ID, which is already a Tuya
   handle, so there is nothing for the root doors to resolve.
 
+### Identifiers are named types
+
+The four identifiers this library maps between are distinct types, not bare `string`s and
+`int64`s: **`tuya.Owner`** (yours), and **`cloud.TuyaUID`**, **`cloud.DeviceID`**,
+**`cloud.SpaceID`** (Tuya's). `Owner` sits in the root because only the root has the concept;
+the two Tuya handles sit in `cloud` because `cloud` takes them and cannot import the root.
+
+Mapping between identity systems is the whole job here, so the compiler should be the one
+checking it. Both of these used to build and fail at runtime:
+
+```go
+iot.ListDevices(ctx, acc.Owner)          // your owner ID, where Tuya's UID belongs
+client.HasDevice(ctx, deviceID, owner)   // two strings, swapped
+```
+
+The conversion you now write at the edge — `tuya.Owner(userID)` — is the point rather than the
+tax: it marks where your identity system enters this library. Database columns are unchanged;
+the adapters convert when they scan.
+
 Ready-made store adapters ship in-tree — pick one, or implement the interfaces yourself:
 
 - **`postgres.AppAccountStore`** / **`postgres.SpaceStore`** — the owner → UID and owner → space
@@ -207,6 +226,8 @@ wrong data center still mints a token, then refuses every business call, so a cr
 List devices by *your* owner ID, and ask about ownership when you need to know:
 
 ```go
+owner := tuya.Owner(userID)                         // your identity system enters here
+
 devices, err := client.ListDevices(ctx, owner)      // typed devices + per-channel names
 if errors.Is(err, tuya.ErrAccountNotLinked) {
     // route the human into the account-linking flow
@@ -302,8 +323,8 @@ revives the row rather than colliding on the key); `Unlink` is a soft-delete (`d
 so `Get` stops returning it while the record is preserved for audit.
 
 ```go
-acc, err := store.Link(ctx, owner, tuyaUID)   // upsert
-err = store.Unlink(ctx, owner)                // soft-delete
+acc, err := store.Link(ctx, owner, cloud.TuyaUID(uid))   // upsert
+err = store.Unlink(ctx, owner)                           // soft-delete
 ```
 
 The PostgreSQL store backs this with a `tuya_app_accounts` table (`owner` PK, `tuya_uid`,
@@ -595,6 +616,10 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 - **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
+- **Breaking in v0.10.0: the four identifiers became named types** — `tuya.Owner`,
+  `cloud.TuyaUID`, `cloud.DeviceID`, `cloud.SpaceID`. Every call site that names an owner, a
+  UID, or a device ID needs an explicit conversion; the compiler points at each one. Stored
+  data and DB columns are untouched. See [Concepts](#identifiers-are-named-types).
 - **Breaking in v0.8.0, alongside the spatial door.** `postgres.Option` and `firestore.Option`
   are now `func(*options)` rather than functions over one store type, so `WithAutoMigrate` and
   `WithCollection` serve both stores; call sites that just pass `postgres.WithAutoMigrate()` or
@@ -614,7 +639,7 @@ rather than assembled from a types file and a behavior file. The store adapters 
 same rule, which is why they are `app_account.go` and not `store.go`.
 
 ```
-iot.go           Package doc and the consumer-side IoT interface.
+iot.go           Package doc, the Owner type, and the consumer-side IoT interface.
                  What both doors share.
 app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLinked,
                  AppAccountStore, AppAccountClient — ListDevices, HasDevice, and
@@ -626,7 +651,8 @@ space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      typed Device/DataPoint/Channel + one method per device endpoint.
+  device.go      DeviceID/TuyaUID + typed Device/DataPoint/Channel + one method per
+                 device endpoint.
   space.go       SpaceID/Space/Resource/Page/Scope + one method per space endpoint.
 postgres/
   app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.
@@ -652,6 +678,8 @@ stores. Remaining work is additive:
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device and space control (`cloud/home.go`), added as new files
       on `cloud.IoT`.
+- [x] Give the four identifiers named types, so mapping one identity system onto another is
+      checked by the compiler rather than by review.
 - [x] Replace the mandatory ownership guards with reportable answers (`HasDevice`,
       `ContainsSpace`, `ContainsDevice`), so consumers with device sharing or their own
       permission model are not locked out. See [Design rationale](#design-rationale).

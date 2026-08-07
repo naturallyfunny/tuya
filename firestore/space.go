@@ -23,7 +23,7 @@ type spaceDoc struct {
 	DeletedAt *time.Time    `firestore:"deleted_at"`
 }
 
-func (d spaceDoc) space(owner string) tuya.Space {
+func (d spaceDoc) space(owner tuya.Owner) tuya.Space {
 	return tuya.Space{
 		Owner:     owner,
 		SpaceID:   d.SpaceID,
@@ -49,7 +49,7 @@ func NewSpaceStore(client *firestore.Client, opts ...Option) *SpaceStore {
 	}
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner tuya.Owner) (tuya.Space, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return tuya.Space{}, err
@@ -71,7 +71,7 @@ func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) 
 	return doc.space(owner), nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID cloud.SpaceID) (tuya.Space, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner tuya.Owner, spaceID cloud.SpaceID) (tuya.Space, error) {
 	if spaceID == 0 {
 		return tuya.Space{}, errors.New("firestore: space id is zero")
 	}
@@ -104,7 +104,7 @@ func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID cloud.Space
 	return space, nil
 }
 
-func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
+func (s *SpaceStore) Unlink(ctx context.Context, owner tuya.Owner) error {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return err
@@ -139,9 +139,9 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	return nil
 }
 
-func (s *SpaceStore) doc(owner string) (*firestore.DocumentRef, error) {
+func (s *SpaceStore) doc(owner tuya.Owner) (*firestore.DocumentRef, error) {
 	if err := validateOwner(owner); err != nil {
 		return nil, err
 	}
-	return s.client.Collection(s.collection).Doc(owner), nil
+	return s.client.Collection(s.collection).Doc(string(owner)), nil
 }

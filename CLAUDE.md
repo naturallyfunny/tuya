@@ -47,7 +47,8 @@ cara tiap pintu memetakan owner ke identifier Tuya. Itu harus terbaca dalam satu
 
 ```
 iot.go         (root, package tuya) Yang dipakai semua pintu: package doc (menyatakan library
-               ini pemeta identitas dan bahwa ia menjawab, bukan memutuskan) + interface IoT
+               ini pemeta identitas dan bahwa ia menjawab, bukan memutuskan) + tipe Owner
+               (identitas milik consumer, dipakai kedua pintu) + interface IoT
                (di-satisfy *cloud.IoT; cuma ListDevices + DeviceChannelNames — pintu
                app-account tidak lagi menyentuh device-addressed endpoint). Tidak ada pintu
                di sini.
@@ -86,7 +87,9 @@ cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. 
   auth.go      Concern auth: request signing (signTokenRequest/signBusinessRequest, hmacSign,
                setAuthHeaders) + token lifecycle (token app-level grant_type=1, fetch/update/
                ensureValidToken). Tuya tanda-tangani token-request vs business-request berbeda.
-  device.go    Domain device: tipe Device/DataPoint/Channel + empat method *IoT yang
+  device.go    Domain device: tipe DeviceID + TuyaUID (identifier Tuya; wajib di sini, bukan
+               root, karena cloud tidak boleh mengimpor root) + Device/DataPoint/Channel +
+               empat method *IoT yang
                masing-masing satu endpoint: ListDevices (GET users/{uid}/devices),
                DeviceStatus, SendCommands, DeviceChannelNames (GET devices/{id}/
                multiple-names). Tanpa ownership, tanpa enrichment — keduanya milik root.
@@ -158,6 +161,9 @@ store, err := postgres.NewAppAccountStore(ctx, pool, postgres.WithAutoMigrate())
 transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com")
 iot := cloud.NewIoT(transport)
 client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
+
+// Identitas consumer masuk lewat konversi eksplisit; itu titik jembatannya
+owner := tuya.Owner(userID)
 
 // Resolve owner→uid + channel-name ditangani tuya.AppAccountClient
 devices, err := client.ListDevices(ctx, owner)
@@ -402,6 +408,20 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   membongkarnya lalu merakit ulang jadi options tiap iterasi. Sekarang satu tipe untuk dua arah,
   field nol = tidak dikirim, halaman yang dikembalikan bisa langsung diumpankan balik (setelah
   `LastRowKey != 0` dicek — nol berarti habis, bukan mulai dari awal). Breaking, v0.9.0.
+- **Sejarah: keempat identifier jadi tipe bernama, Agustus 2026, v0.10.0.** `tuya.Owner` di
+  `iot.go`, `cloud.TuyaUID` + `cloud.DeviceID` di `cloud/device.go`, melengkapi `cloud.SpaceID`
+  yang sudah ada. Alasannya bukan kerapian: memetakan identitas consumer ke identifier Tuya
+  adalah satu-satunya tugas library ini, dan sebelum ini `iot.ListDevices(ctx, acc.Owner)`
+  (harusnya `acc.TuyaUID`) dan `HasDevice(ctx, deviceID, owner)` (tertukar) sama-sama kompilasi
+  tanpa keluhan. Sekarang keduanya error saat build — sudah diverifikasi, bukan diasumsikan.
+  Dua turunan yang mudah dibongkar ulang kalau lupa alasannya: **(a)** `cloud.Resource.ID`
+  sengaja tetap `string`. `ContainsDevice` membandingkannya dengan device id lewat konversi di
+  titik banding (`cloud.DeviceID(res.ID) == deviceID`); menjadikan field itu `DeviceID` akan
+  mengklaim semua resource adalah device, padahal `ResourceType` ada justru karena tidak — dan
+  nama yang mengklaim hal yang kodenya tidak cek adalah persis yang dilarang di aturan penamaan
+  di atas. **(b)** Kolom DB tidak berubah; konversi terjadi di store, dan `postgres/app_account.go`
+  dapat `scanAppAccount` supaya sebangun dengan `scanSpace` yang sudah ada. Referensi ke
+  signature ber-`string` di luar repo ini adalah sisa versi ≤ v0.9.x — `agentkit` termasuk.
 - **`SpaceID.MarshalJSON` dihapus karena hasilnya persis sama dengan default.** `type SpaceID
   int64` sudah di-marshal sebagai JSON number tanpa bantuan siapa pun, termasuk di field
   ber-`omitempty` (`omitempty` melihat nilai Go-nya, bukan hasil marshal). `UnmarshalJSON` tetap
@@ -454,6 +474,15 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
 - `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile. `SpaceStore` di kedua package ikut pola yang sama.
 - `postgres.NewAppAccountStore(ctx, db, opts...)` / `postgres.NewSpaceStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
 - `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup; runner-nya satu untuk semua tabel, jadi option ini di store mana pun menaikkan seluruh schema
-- Space ID lewat `cloud.SpaceID`, tidak pernah `int64`/`any` telanjang (presisi + Tuya kirim number maupun string). Listing space/resource wajib menyebut `cloud.Scope`.
+- Keempat identifier lewat tipe bernama, tidak pernah `string`/`int64`/`any` telanjang:
+  `tuya.Owner` (milik consumer, di `iot.go`) dan `cloud.TuyaUID`/`cloud.DeviceID`/`cloud.SpaceID`
+  (milik Tuya, di `cloud`). `SpaceID` punya alasan tambahan (presisi + Tuya kirim number maupun
+  string); tiga sisanya supaya menukar owner dengan uid atau owner dengan device id gagal saat
+  kompilasi — itu inti pekerjaan library ini, jadi compiler yang mengeceknya. Konversi eksplisit
+  di call site consumer memang tujuannya. Listing space/resource wajib menyebut `cloud.Scope`.
+- Tipe bernama berhenti di tepi driver: kolom DB tetap `text`/`bigint`, argumen query dan hasil
+  scan dikonversi di store (`string(owner)`, `tuya.Owner(owner)`) — persis pola `int64(spaceID)`
+  yang sudah ada. Firestore beda: doc struct-nya memang wire format, jadi ia memegang tipe
+  bernama langsung (`cloud.SpaceID`, `cloud.TuyaUID`), dan yang dikonversi cuma doc ID.
 - Empat package: root `tuya` (owner-scoped) + `cloud/` (Tuya murni) + `postgres/` + `firestore/`; tidak ada `pkg/`
 - Conventional commits: `feat:`, `fix:`, `chore(migrate):` dst

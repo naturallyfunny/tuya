@@ -10,7 +10,7 @@ import (
 )
 
 type Space struct {
-	Owner     string        `json:"owner"`
+	Owner     Owner         `json:"owner"`
 	SpaceID   cloud.SpaceID `json:"space_id"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`
@@ -23,9 +23,9 @@ var (
 )
 
 type SpaceStore interface {
-	Get(ctx context.Context, owner string) (Space, error)
-	Link(ctx context.Context, owner string, spaceID cloud.SpaceID) (Space, error)
-	Unlink(ctx context.Context, owner string) error
+	Get(ctx context.Context, owner Owner) (Space, error)
+	Link(ctx context.Context, owner Owner, spaceID cloud.SpaceID) (Space, error)
+	Unlink(ctx context.Context, owner Owner) error
 }
 
 type SpaceIoT interface {
@@ -47,11 +47,11 @@ func NewSpaceClient(iot SpaceIoT, store SpaceStore) *SpaceClient {
 	return &SpaceClient{iot: iot, store: store}
 }
 
-func (c *SpaceClient) SpaceOf(ctx context.Context, owner string) (Space, error) {
+func (c *SpaceClient) SpaceOf(ctx context.Context, owner Owner) (Space, error) {
 	return c.store.Get(ctx, owner)
 }
 
-func (c *SpaceClient) CreateSpace(ctx context.Context, owner, name string, parentID cloud.SpaceID, description string) (cloud.SpaceID, error) {
+func (c *SpaceClient) CreateSpace(ctx context.Context, owner Owner, name string, parentID cloud.SpaceID, description string) (cloud.SpaceID, error) {
 	ownerSpace, parent, err := c.resolve(ctx, owner, parentID)
 	if err != nil {
 		return 0, err
@@ -62,7 +62,7 @@ func (c *SpaceClient) CreateSpace(ctx context.Context, owner, name string, paren
 	return c.iot.CreateSpace(ctx, name, parent, description)
 }
 
-func (c *SpaceClient) Space(ctx context.Context, owner string, id cloud.SpaceID) (cloud.Space, error) {
+func (c *SpaceClient) Space(ctx context.Context, owner Owner, id cloud.SpaceID) (cloud.Space, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return cloud.Space{}, err
@@ -73,7 +73,7 @@ func (c *SpaceClient) Space(ctx context.Context, owner string, id cloud.SpaceID)
 	return c.iot.Space(ctx, target)
 }
 
-func (c *SpaceClient) ModifySpace(ctx context.Context, owner string, id cloud.SpaceID, name, description string) error {
+func (c *SpaceClient) ModifySpace(ctx context.Context, owner Owner, id cloud.SpaceID, name, description string) error {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return err
@@ -84,7 +84,7 @@ func (c *SpaceClient) ModifySpace(ctx context.Context, owner string, id cloud.Sp
 	return c.iot.ModifySpace(ctx, target, name, description)
 }
 
-func (c *SpaceClient) DeleteSpace(ctx context.Context, owner string, id cloud.SpaceID) error {
+func (c *SpaceClient) DeleteSpace(ctx context.Context, owner Owner, id cloud.SpaceID) error {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func (c *SpaceClient) DeleteSpace(ctx context.Context, owner string, id cloud.Sp
 	return c.iot.DeleteSpace(ctx, target)
 }
 
-func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.SpaceID, cloud.Page, error) {
+func (c *SpaceClient) ChildSpaces(ctx context.Context, owner Owner, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.SpaceID, cloud.Page, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return nil, cloud.Page{}, err
@@ -109,7 +109,7 @@ func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id cloud.Sp
 	return c.iot.ListSpaces(ctx, target, scope, page)
 }
 
-func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.Resource, cloud.Page, error) {
+func (c *SpaceClient) SpaceResources(ctx context.Context, owner Owner, id cloud.SpaceID, scope cloud.Scope, page cloud.Page) ([]cloud.Resource, cloud.Page, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return nil, cloud.Page{}, err
@@ -120,7 +120,7 @@ func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id cloud
 	return c.iot.SpaceResources(ctx, target, scope, page)
 }
 
-func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id cloud.SpaceID) (bool, error) {
+func (c *SpaceClient) ContainsSpace(ctx context.Context, owner Owner, id cloud.SpaceID) (bool, error) {
 	ownerSpace, target, err := c.resolve(ctx, owner, id)
 	if err != nil {
 		return false, err
@@ -134,7 +134,7 @@ func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id cloud.
 	return true, nil
 }
 
-func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string) (bool, error) {
+func (c *SpaceClient) ContainsDevice(ctx context.Context, owner Owner, deviceID cloud.DeviceID) (bool, error) {
 	ownerSpace, err := c.ownerSpace(ctx, owner)
 	if err != nil {
 		return false, err
@@ -146,7 +146,7 @@ func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string
 			return false, fmt.Errorf("scan resources of space %s: %w", ownerSpace, err)
 		}
 		for _, resource := range resources {
-			if resource.Type == cloud.ResourceDevice && resource.ID == deviceID {
+			if resource.Type == cloud.ResourceDevice && cloud.DeviceID(resource.ID) == deviceID {
 				return true, nil
 			}
 		}
@@ -158,7 +158,7 @@ func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string
 	return false, fmt.Errorf("scan resources of space %s: did not end after %d pages", ownerSpace, deviceScanMaxPages)
 }
 
-func (c *SpaceClient) ownerSpace(ctx context.Context, owner string) (cloud.SpaceID, error) {
+func (c *SpaceClient) ownerSpace(ctx context.Context, owner Owner) (cloud.SpaceID, error) {
 	space, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return 0, err
@@ -169,7 +169,7 @@ func (c *SpaceClient) ownerSpace(ctx context.Context, owner string) (cloud.Space
 	return space.SpaceID, nil
 }
 
-func (c *SpaceClient) resolve(ctx context.Context, owner string, id cloud.SpaceID) (ownerSpace, target cloud.SpaceID, err error) {
+func (c *SpaceClient) resolve(ctx context.Context, owner Owner, id cloud.SpaceID) (ownerSpace, target cloud.SpaceID, err error) {
 	ownerSpace, err = c.ownerSpace(ctx, owner)
 	if err != nil {
 		return 0, 0, err
