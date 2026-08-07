@@ -14,21 +14,21 @@ import (
 	"go.naturallyfunny.dev/tuya/cloud"
 )
 
-const DefaultSpaceCollection = "tuya_space_tenants"
+const DefaultSpaceCollection = "tuya_spaces"
 
-type tenantDoc struct {
-	RootSpaceID cloud.SpaceID `firestore:"root_space_id"`
-	CreatedAt   time.Time     `firestore:"created_at"`
-	UpdatedAt   time.Time     `firestore:"updated_at"`
-	DeletedAt   *time.Time    `firestore:"deleted_at"`
+type spaceDoc struct {
+	SpaceID   cloud.SpaceID `firestore:"space_id"`
+	CreatedAt time.Time     `firestore:"created_at"`
+	UpdatedAt time.Time     `firestore:"updated_at"`
+	DeletedAt *time.Time    `firestore:"deleted_at"`
 }
 
-func (d tenantDoc) tenant(owner string) tuya.SpaceTenant {
-	return tuya.SpaceTenant{
-		Owner:       owner,
-		RootSpaceID: d.RootSpaceID,
-		CreatedAt:   d.CreatedAt,
-		UpdatedAt:   d.UpdatedAt,
+func (d spaceDoc) space(owner string) tuya.Space {
+	return tuya.Space{
+		Owner:     owner,
+		SpaceID:   d.SpaceID,
+		CreatedAt: d.CreatedAt,
+		UpdatedAt: d.UpdatedAt,
 	}
 }
 
@@ -49,59 +49,59 @@ func NewSpaceStore(client *firestore.Client, opts ...Option) *SpaceStore {
 	}
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.SpaceTenant, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.SpaceTenant{}, err
+		return tuya.Space{}, err
 	}
 	snap, err := ref.Get(ctx)
 	if status.Code(err) == codes.NotFound {
-		return tuya.SpaceTenant{}, tuya.ErrSpaceNotLinked
+		return tuya.Space{}, tuya.ErrSpaceNotLinked
 	}
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("get space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("get space: %w", err)
 	}
-	var doc tenantDoc
+	var doc spaceDoc
 	if err := snap.DataTo(&doc); err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("get space tenant: decode %q: %w", owner, err)
+		return tuya.Space{}, fmt.Errorf("get space: decode %q: %w", owner, err)
 	}
 	if doc.DeletedAt != nil {
-		return tuya.SpaceTenant{}, tuya.ErrSpaceNotLinked
+		return tuya.Space{}, tuya.ErrSpaceNotLinked
 	}
-	return doc.tenant(owner), nil
+	return doc.space(owner), nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner string, rootSpaceID cloud.SpaceID) (tuya.SpaceTenant, error) {
-	if rootSpaceID == 0 {
-		return tuya.SpaceTenant{}, errors.New("firestore: root space id is zero")
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID cloud.SpaceID) (tuya.Space, error) {
+	if spaceID == 0 {
+		return tuya.Space{}, errors.New("firestore: space id is zero")
 	}
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.SpaceTenant{}, err
+		return tuya.Space{}, err
 	}
-	var tenant tuya.SpaceTenant
+	var space tuya.Space
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		now := time.Now().UTC()
-		doc := tenantDoc{RootSpaceID: rootSpaceID, CreatedAt: now, UpdatedAt: now}
+		doc := spaceDoc{SpaceID: spaceID, CreatedAt: now, UpdatedAt: now}
 		snap, err := tx.Get(ref)
 		switch {
 		case status.Code(err) == codes.NotFound:
 		case err != nil:
 			return err
 		default:
-			var prev tenantDoc
+			var prev spaceDoc
 			if err := snap.DataTo(&prev); err != nil {
 				return fmt.Errorf("decode %q: %w", owner, err)
 			}
 			doc.CreatedAt = prev.CreatedAt
 		}
-		tenant = doc.tenant(owner)
+		space = doc.space(owner)
 		return tx.Set(ref, doc)
 	})
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("link space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("link space: %w", err)
 	}
-	return tenant, nil
+	return space, nil
 }
 
 func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
@@ -117,7 +117,7 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 		if err != nil {
 			return err
 		}
-		var doc tenantDoc
+		var doc spaceDoc
 		if err := snap.DataTo(&doc); err != nil {
 			return fmt.Errorf("decode %q: %w", owner, err)
 		}
@@ -134,7 +134,7 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 		return tuya.ErrSpaceNotLinked
 	}
 	if err != nil {
-		return fmt.Errorf("unlink space tenant: %w", err)
+		return fmt.Errorf("unlink space: %w", err)
 	}
 	return nil
 }

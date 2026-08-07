@@ -13,23 +13,23 @@ import (
 var _ tuya.SpaceIoT = (*cloud.IoT)(nil)
 
 const (
-	tenantRoot cloud.SpaceID = 15000001
+	ownerSpace cloud.SpaceID = 15000001
 	insideRoom cloud.SpaceID = 15000002
 	foreign    cloud.SpaceID = 99000001
 )
 
 type fakeSpaceStore struct {
-	tenant   tuya.SpaceTenant
+	space    tuya.Space
 	err      error
 	gotOwner string
 }
 
-func (f *fakeSpaceStore) Get(_ context.Context, owner string) (tuya.SpaceTenant, error) {
+func (f *fakeSpaceStore) Get(_ context.Context, owner string) (tuya.Space, error) {
 	f.gotOwner = owner
-	return f.tenant, f.err
+	return f.space, f.err
 }
 
-func (f *fakeSpaceStore) Link(context.Context, string, cloud.SpaceID) (tuya.SpaceTenant, error) {
+func (f *fakeSpaceStore) Link(context.Context, string, cloud.SpaceID) (tuya.Space, error) {
 	panic("Link not expected in these tests")
 }
 
@@ -123,11 +123,11 @@ func (f *fakeSpaceIoT) SendCommands(_ context.Context, deviceID string, cmds []c
 
 func newSpaceDoor(t *testing.T, iot *fakeSpaceIoT) *tuya.SpaceClient {
 	t.Helper()
-	store := &fakeSpaceStore{tenant: tuya.SpaceTenant{Owner: "owner-1", RootSpaceID: tenantRoot}}
+	store := &fakeSpaceStore{space: tuya.Space{Owner: "owner-1", SpaceID: ownerSpace}}
 	return tuya.NewSpaceClient(iot, store)
 }
 
-func TestSpaceDoorReachesSpacesInsideTheTenant(t *testing.T) {
+func TestSpaceDoorReachesSpacesInsideTheOwnersSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{insideRoom: true}}
 	door := newSpaceDoor(t, iot)
 
@@ -138,12 +138,12 @@ func TestSpaceDoorReachesSpacesInsideTheTenant(t *testing.T) {
 	if space.ID != insideRoom {
 		t.Errorf("space id = %d, want %d", space.ID, insideRoom)
 	}
-	if len(iot.relationQueries) != 1 || iot.relationQueries[0] != [2]cloud.SpaceID{tenantRoot, insideRoom} {
-		t.Errorf("relation queries = %v, want one asking whether %d holds %d", iot.relationQueries, tenantRoot, insideRoom)
+	if len(iot.relationQueries) != 1 || iot.relationQueries[0] != [2]cloud.SpaceID{ownerSpace, insideRoom} {
+		t.Errorf("relation queries = %v, want one asking whether %d holds %d", iot.relationQueries, ownerSpace, insideRoom)
 	}
 }
 
-func TestSpaceDoorRefusesSpacesOutsideTheTenant(t *testing.T) {
+func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
@@ -173,7 +173,7 @@ func TestSpaceDoorRefusesSpacesOutsideTheTenant(t *testing.T) {
 	}
 }
 
-func TestDeviceCallsNeedTheDeviceInTheTenantSubtree(t *testing.T) {
+func TestDeviceCallsNeedTheDeviceInTheOwnersSubtree(t *testing.T) {
 	lobbyLight := cloud.Resource{ID: "dev-lobby", Type: cloud.ResourceDevice}
 	iot := &fakeSpaceIoT{pages: []resourcePage{{resources: []cloud.Resource{lobbyLight}}}}
 	door := newSpaceDoor(t, iot)
@@ -186,9 +186,9 @@ func TestDeviceCallsNeedTheDeviceInTheTenantSubtree(t *testing.T) {
 	if len(status) != 1 || iot.statusOf != "dev-lobby" {
 		t.Errorf("read status of %q, want dev-lobby", iot.statusOf)
 	}
-	// The subtree, not one room: the device may sit anywhere under the tenant.
-	if iot.resourcesOf != tenantRoot {
-		t.Errorf("guard listed space %d, want the tenant root %d", iot.resourcesOf, tenantRoot)
+	// The subtree, not one room: the device may sit anywhere inside the owner's space.
+	if iot.resourcesOf != ownerSpace {
+		t.Errorf("guard listed space %d, want the owner's space %d", iot.resourcesOf, ownerSpace)
 	}
 
 	iot.resourceCalls = 0
@@ -263,7 +263,7 @@ func TestDeviceGuardGivesUpRatherThanPageForever(t *testing.T) {
 	}
 }
 
-func TestSpaceDoorStopsWhenTheOwnerHasNoTenant(t *testing.T) {
+func TestSpaceDoorStopsWhenTheOwnerHasNoSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{}
 	store := &fakeSpaceStore{err: tuya.ErrSpaceNotLinked}
 	door := tuya.NewSpaceClient(iot, store)
@@ -272,11 +272,11 @@ func TestSpaceDoorStopsWhenTheOwnerHasNoTenant(t *testing.T) {
 		t.Errorf("Space error = %v, want ErrSpaceNotLinked", err)
 	}
 	if len(iot.relationQueries) != 0 {
-		t.Errorf("asked Tuya %d times without a tenant, want none", len(iot.relationQueries))
+		t.Errorf("asked Tuya %d times without a linked space, want none", len(iot.relationQueries))
 	}
 }
 
-func TestZeroSpaceIDMeansTheTenantRoot(t *testing.T) {
+func TestZeroSpaceIDMeansTheOwnersSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
@@ -284,41 +284,42 @@ func TestZeroSpaceIDMeansTheTenantRoot(t *testing.T) {
 	if _, err := door.Space(ctx, "owner-1", 0); err != nil {
 		t.Fatalf("Space: unexpected error: %v", err)
 	}
-	if iot.queried != tenantRoot {
-		t.Errorf("queried space %d, want the tenant root %d", iot.queried, tenantRoot)
+	if iot.queried != ownerSpace {
+		t.Errorf("queried space %d, want the owner's space %d", iot.queried, ownerSpace)
 	}
 	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, cloud.DirectChildren); err != nil {
 		t.Fatalf("ChildSpaces: unexpected error: %v", err)
 	}
-	if iot.listed != tenantRoot {
-		t.Errorf("listed children of %d, want the tenant root %d", iot.listed, tenantRoot)
+	if iot.listed != ownerSpace {
+		t.Errorf("listed children of %d, want the owner's space %d", iot.listed, ownerSpace)
 	}
 	if _, err := door.CreateSpace(ctx, "owner-1", "Room 3", 0, ""); err != nil {
 		t.Fatalf("CreateSpace: unexpected error: %v", err)
 	}
-	if iot.createdParent != tenantRoot {
-		t.Errorf("created under %d, want the tenant root %d", iot.createdParent, tenantRoot)
+	if iot.createdParent != ownerSpace {
+		t.Errorf("created under %d, want the owner's space %d", iot.createdParent, ownerSpace)
 	}
 
-	// The root is the tenant's by definition — asking Tuya to confirm it would
-	// be a request per call, and its answer for a space against itself is not
-	// something Tuya documents.
+	// The owner's own space is theirs by definition — asking Tuya would be a
+	// request per call, and Tuya answers false for a space compared against
+	// itself, so asking would refuse it.
 	if len(iot.relationQueries) != 0 {
-		t.Errorf("asked Tuya about the root %d times, want none", len(iot.relationQueries))
+		t.Errorf("asked Tuya about the owner's own space %d times, want none", len(iot.relationQueries))
 	}
 }
 
-func TestTheTenantRootCannotBeDeletedThroughTheDoor(t *testing.T) {
-	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{tenantRoot: true}}
+func TestTheOwnersSpaceCannotBeDeletedThroughTheDoor(t *testing.T) {
+	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{ownerSpace: true}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
 
-	// Tuya deletes subspaces along with their parent: this would erase the tenancy.
-	if err := door.DeleteSpace(ctx, "owner-1", tenantRoot); !errors.Is(err, tuya.ErrRootSpaceProtected) {
-		t.Errorf("DeleteSpace(root) error = %v, want ErrRootSpaceProtected", err)
+	// Tuya deletes subspaces along with their parent: this would erase everything
+	// the owner can reach and leave the store pointing at a space that is gone.
+	if err := door.DeleteSpace(ctx, "owner-1", ownerSpace); !errors.Is(err, tuya.ErrOwnerSpaceProtected) {
+		t.Errorf("DeleteSpace(owner's space) error = %v, want ErrOwnerSpaceProtected", err)
 	}
-	if err := door.DeleteSpace(ctx, "owner-1", 0); !errors.Is(err, tuya.ErrRootSpaceProtected) {
-		t.Errorf("DeleteSpace(0) error = %v, want ErrRootSpaceProtected", err)
+	if err := door.DeleteSpace(ctx, "owner-1", 0); !errors.Is(err, tuya.ErrOwnerSpaceProtected) {
+		t.Errorf("DeleteSpace(0) error = %v, want ErrOwnerSpaceProtected", err)
 	}
 	if iot.deleted != 0 {
 		t.Errorf("deleted space %d, want none", iot.deleted)

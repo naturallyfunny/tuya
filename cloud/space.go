@@ -264,8 +264,9 @@ func (c *IoT) ChildSpaces(ctx context.Context, id SpaceID, scope Scope, opts ...
 	return c.childSpaces(ctx, query)
 }
 
-// RootSpaces returns one page of the spaces at the root of the cloud project —
-// every tenant's, not one tenant's. Never reach it from a tenant-scoped path.
+// RootSpaces returns one page of the spaces at the top level of the cloud
+// project, all of them at once. The owner-scoped door in the root package
+// leaves it out of its interface on purpose: no owner may ask for this.
 func (c *IoT) RootSpaces(ctx context.Context, scope Scope, opts ...PageOption) ([]SpaceID, Page, error) {
 	query, err := listQuery(scope, opts)
 	if err != nil {

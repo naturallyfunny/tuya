@@ -22,7 +22,7 @@ func TestValidateOwner(t *testing.T) {
 	invalid := []string{
 		"",
 		".", "..",
-		"tenants/alice",
+		"owners/alice",
 		strings.Repeat("x", 1501),
 		"__reserved__", "____",
 	}

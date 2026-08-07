@@ -7,8 +7,8 @@
 A small, interface-first Go library for the [Tuya Cloud OpenAPI](https://developer.tuya.com/en/docs/cloud/).
 It signs and authenticates requests, manages the app-level access token, and exposes typed
 device and space operations — behind an ownership boundary you can hand to an untrusted caller.
-Both of Tuya's tenancy models get a door: one Tuya account per human, or one root space per
-tenant.
+Both of the ways Tuya lets a cloud project reach devices get a door: through app accounts you
+link, or through the project's own tree of spaces.
 
 It is built to be used as a **tool invoked by an AI agent**: low-traffic, one action per user
 intent (list devices, read a device's state, send it a command). The design leans on that
@@ -70,7 +70,7 @@ Three composable tiers. Bind the one your caller needs:
 | Just the transport (token lifecycle, signing, raw `Do`)  | `cloud.Client`          | no       |
 | A Tuya UID or space ID, want typed device and space ops  | `cloud.IoT`             | no       |
 | Your own owner ID, one Tuya app account per human        | `tuya.AppAccountClient` | **yes**  |
-| Your own owner ID, one root space per tenant             | `tuya.SpaceClient`      | **yes**  |
+| Your own owner ID, one space per owner                    | `tuya.SpaceClient`      | **yes**  |
 
 - **`tuya.AppAccountClient`** — the owner-scoped door. Resolves owner → Tuya UID through an
   `AppAccountStore`, asserts the target device belongs to that account (a lean, unenriched
@@ -79,27 +79,31 @@ Three composable tiers. Bind the one your caller needs:
   drives — including the ownership check itself, which is built here from plain `cloud`
   primitives rather than asked of `cloud`.
 
-  The name states a **tenancy model**, not verbosity. Tuya has two, and they differ in what
-  a tenant *is*. `AppAccountClient` is the app-account model: every human holds their own
-  Tuya app account, so the boundary is a Tuya UID and an `AppAccountStore` maps owner → UID.
-  A bare `Client` would no longer say which of the two you are holding.
+  The name states **which of Tuya's two device models** it speaks, not verbosity.
+  `AppAccountClient` is the app-account one: every human holds their own Tuya app account, you
+  link that account to your cloud project, and the boundary is its Tuya UID — an
+  `AppAccountStore` maps owner → UID. A project can hold any number of linked app accounts and
+  can unlink one at any time; each account belongs to the person, not to your project. A bare
+  `Client` would no longer say which of the two you are holding.
 
   The `App` prefix does a second job: *account* alone is ambiguous here. A Tuya **app
   account** holds devices and is keyed by UID; a Tuya **project account** holds the
   `accessID` / `accessSecret`. Naming the first one precisely is what keeps the two apart.
   Call sites stay short, because the variable name is yours —
   `app := tuya.NewAppAccountClient(...)` then `app.Account(ctx, owner)`.
-- **`tuya.SpaceClient`** — the same door for Tuya's other tenancy model, the spatial one: a
-  tenant *is* a root space, everything it owns hangs in the subtree below it, and there is no
-  per-tenant UID at all. It is what Tuya recommends for multi-tenant property — hotels,
-  apartments, offices. A `SpaceStore` maps owner → root space ID, and every call resolves the
-  owner before it touches a space.
+- **`tuya.SpaceClient`** — the same door for Tuya's other model, the spatial one: devices sit in
+  a tree of spaces that belongs to the cloud project itself, and no Tuya app account is involved
+  anywhere in it. That tree is not something you link — a project has exactly one, bound to it,
+  with nothing to attach or detach. A `SpaceStore` maps owner → space ID, and every call resolves
+  the owner before it touches a space. Consumers typically hand each of their customers one space
+  and treat everything below it as theirs — property, hotels, offices — but the library only
+  knows the link.
 
   It carries **two** guards, because they cost different amounts. Space operations ask Tuya one
-  question — *is this space inside that root?* — and containment is transitive, so one boolean
+  question — *is this space inside the owner's?* — and containment is transitive, so one boolean
   also settles deletes: everything under a space you own is yours too. Device operations get no
   such shortcut; see the [rationale](#design-rationale). Throughout the door, a zero space ID
-  means *the tenant's own root*, never Tuya's project root.
+  means *the owner's own space*, never the project's top level.
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
@@ -114,8 +118,8 @@ Three composable tiers. Bind the one your caller needs:
 
 Ready-made store adapters ship in-tree — pick one, or implement the interfaces yourself:
 
-- **`postgres.AppAccountStore`** / **`postgres.SpaceStore`** — the owner → UID and owner → root
-  space mappings in PostgreSQL (`pgx`), with an embedded migration runner shared by both.
+- **`postgres.AppAccountStore`** / **`postgres.SpaceStore`** — the owner → UID and owner → space
+  mappings in PostgreSQL (`pgx`), with an embedded migration runner shared by both.
 - **`firestore.AppAccountStore`** / **`firestore.SpaceStore`** — the same contracts on Cloud
   Firestore: one document per owner, no migrations.
 
@@ -163,11 +167,11 @@ client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satis
 For the spatial model, swap the store and the door — the transport and facade are the same:
 
 ```go
-tenants, err := postgres.NewSpaceStore(ctx, pool, postgres.WithAutoMigrate())
+spaces, err := postgres.NewSpaceStore(ctx, pool, postgres.WithAutoMigrate())
 if err != nil {
     log.Fatal(err)
 }
-hotel := tuya.NewSpaceClient(iot, tenants) // the same iot, taken as tuya.SpaceIoT
+hotel := tuya.NewSpaceClient(iot, spaces) // the same iot, taken as tuya.SpaceIoT
 ```
 
 `cloud.New` prefetches an access token, so a bad credential or unreachable region fails here,
@@ -235,21 +239,23 @@ channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels,
 
 ### Spaces
 
-With `tuya.SpaceClient`, the tenant is a root space. A zero space ID always means *that* root,
-so the common calls need no ID at all, and nothing reachable here can name a space belonging to
-another tenant:
+With `tuya.SpaceClient`, each owner is linked to one space. A zero space ID always means *that*
+space, so the common calls need no ID at all, and nothing reachable here can name a space
+belonging to another owner:
 
 ```go
 rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren) // one page
-room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin")          // under my root
+room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin")          // under the owner's
 
 things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree) // devices in it
 err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{
     {Code: "switch_1", Value: true},                                       // ownership asserted
 })
 if errors.Is(err, tuya.ErrSpaceNotOwned) {
-    // the space is outside this tenant's subtree
+    // the space is outside the owner's subtree
 }
+
+space, err := hotel.SpaceOf(ctx, owner)                                    // which space is theirs
 ```
 
 Listings take an explicit `cloud.Scope` — `cloud.DirectChildren` or `cloud.Subtree` — because
@@ -257,10 +263,10 @@ Tuya's own default for that parameter is undocumented, and a listing that quietl
 wrong depth is exactly what you must not build an ownership check on. Each call returns **one**
 page plus a `cloud.Page` cursor; see [rationale](#design-rationale) for why the loop is yours.
 
-Deleting the tenant's own root is refused (`tuya.ErrRootSpaceProtected`): Tuya deletes a space
-together with its subspaces, so that one call would erase the whole tenancy and leave your
-mapping pointing at nothing. Unlink it in the store instead, or delete it deliberately through
-`cloud.IoT`.
+Deleting the owner's own space is refused (`tuya.ErrOwnerSpaceProtected`): Tuya deletes a space
+together with everything below it, so that one call would erase the owner's whole reach and
+leave your mapping pointing at a space that is gone. Unlink it in the store instead, or delete
+it deliberately through `cloud.IoT`.
 
 ## Linking accounts
 
@@ -278,12 +284,12 @@ The PostgreSQL store backs this with a `tuya_app_accounts` table (`owner` PK, `t
 timestamps, `deleted_at`); Firestore with a `tuya_app_accounts` collection (override via
 `firestore.WithCollection`), one document per owner keyed by the owner string.
 
-`SpaceStore` is the same lifecycle for the spatial model, keyed to a root space instead of a
-UID (`tuya_space_tenants` in both backends):
+`SpaceStore` is the same lifecycle for the spatial model, keyed to a space instead of a
+UID (`tuya_spaces` in both backends):
 
 ```go
-tenant, err := tenants.Link(ctx, owner, cloud.SpaceID(150000001))
-err = tenants.Unlink(ctx, owner)
+space, err := spaces.Link(ctx, owner, cloud.SpaceID(150000001))
+err = spaces.Unlink(ctx, owner)
 ```
 
 ### Migrations (PostgreSQL)
@@ -307,7 +313,7 @@ Each one is a domain or usage constraint, not an oversight.
   Callers already hold `[]byte` from `json.Marshal`.
 
 - **The ownership guard lives at the root (`tuya.AppAccountClient`), not in `cloud.IoT`.**
-  `cloud.IoT` is a trusted, device-addressed layer with no tenant check — by design. Pushing
+  `cloud.IoT` is a trusted, device-addressed layer with no owner check — by design. Pushing
   the guard *up* to a single owner-scoped door makes it un-bypassable: you cannot reach a
   device without first resolving an owner. A guard buried in the device layer would have to
   thread a UID through every call and could still be sidestepped by a sibling method.
@@ -353,13 +359,13 @@ Each one is a domain or usage constraint, not an oversight.
 
 - **The spatial door carries two guards, because Tuya prices them very differently.**
   Guarding a *space* costs one request: `GET /v2.0/cloud/space/relation` answers whether a space
-  sits inside the tenant's root, and containment is transitive — confirmed against the live API,
-  where a root answers `true` for its grandchild. That also settles deletes, since everything
+  sits inside the owner's, and containment is transitive — confirmed against the live API, where
+  a space answers `true` for its grandchild. That also settles deletes, since everything
   under a space you own is yours too. Two edges of that endpoint shape the guard: a space
-  compared against *itself* answers `false`, so the door grants the tenant its own root without
+  compared against *itself* answers `false`, so the door grants an owner their own space without
   asking (an optimization that is also a correctness fix), and a space the project cannot see at
   all is refused outright with code `40001900` rather than answered `false` — which the door
-  translates to `ErrSpaceNotOwned`, because for a tenant it means the same thing. Guarding a
+  translates to `ErrSpaceNotOwned`, because for the owner it means the same thing. Guarding a
   *device* gets no such shortcut. Tuya has no "which space holds this device" lookup at all: `GET
   /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset ID.
   The only route is to walk the subtree's resources and look for the ID, paginated, before every
@@ -420,9 +426,9 @@ Each one is a domain or usage constraint, not an oversight.
   stops cost one comparison and turn any future surprise into a refusal rather than a hang.
 
 - **`RootSpaces` exists in `cloud`, and deliberately not in `SpaceIoT`.**
-  `GET /v2.0/cloud/space/child` without a `space_id` returns the root spaces of the whole cloud
-  project — every tenant's. It is legitimate for an operator and catastrophic on a tenant-scoped
-  path, so it is a separate method rather than the zero-ID case of `ChildSpaces` (which rejects
+  `GET /v2.0/cloud/space/child` without a `space_id` returns the top-level spaces of the whole
+  cloud project, all of them. It is legitimate for an operator and catastrophic on an
+  owner-scoped path, so it is a separate method rather than the zero-ID case of `ChildSpaces` (which rejects
   zero), and the interface the spatial door declares does not mention it. The door cannot call
   what it cannot name.
 
@@ -448,10 +454,10 @@ Each one is a domain or usage constraint, not an oversight.
   `WithHTTPClient` — the right lever for transport-level control.
 
 - **The Firestore store writes timestamps client-side, not with `ServerTimestamp` sentinels.**
-  `Link` returns the exact `Account` it just stored. A `ServerTimestamp` sentinel's value is
+  `Link` returns the exact `AppAccount` it just stored. A `ServerTimestamp` sentinel's value is
   unknown until *after* the commit resolves, which would force a second read to learn what was
   written. Stamping `time.Now().UTC()` inside the transaction lets `Link` return the stored
-  `Account` from the one round trip it already makes. The trade-off is trusting the client
+  `AppAccount` from the one round trip it already makes. The trade-off is trusting the client
   clock for `created_at` / `updated_at` — acceptable for an audit timestamp on a low-frequency
   linking action, not for a monotonic event log. (The PostgreSQL store has no such tension: its
   `RETURNING` clause hands back the server-set `NOW()` in the same statement.)
@@ -480,7 +486,7 @@ To keep the surface honest, the library deliberately does **not**:
   right for sporadic, one-intent-at-a-time agent traffic and would only be rebuilt (caching,
   invalidation) if a real throughput need appeared. See
   [Design rationale](#design-rationale).
-- **Verify trust for `cloud.IoT`.** That layer is device-addressed with no tenant check by design;
+- **Verify trust for `cloud.IoT`.** That layer is device-addressed with no owner check by design;
   deciding who may hold it is the consumer's job.
 
 ## Testing
@@ -494,8 +500,8 @@ owner — is unit-tested against fake `IoT`, `SpaceIoT` and store implementation
 `ErrAccountNotLinked` / `ErrDeviceNotOwned` / `ErrSpaceNotLinked` / `ErrSpaceNotOwned`, the
 short-circuit guards (a command must never reach an unowned device), and the cost guard (an
 ownership check must never trigger channel-name requests). For the spatial door it also pins
-that a zero space ID resolves to the tenant's own root without asking Tuya, that the tenant root
-cannot be deleted through the door, that a space the project cannot see is refused as unowned
+that a zero space ID resolves to the owner's own space without asking Tuya, that the owner's own
+space cannot be deleted through the door, that a space the project cannot see is refused as unowned
 rather than surfacing a raw API error, and that the paginated device walk terminates on a
 stalled cursor *and* on a cursor that keeps advancing forever. That suite covers **88.4%** of
 the package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
@@ -534,8 +540,8 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 ## Layout
 
-Every package is split **per tenancy model**, not per kind of declaration. What differs
-between models is the guard — the riskiest code here — so it should be readable in one file
+Every package is split **per door**, not per kind of declaration. What differs between the two
+doors is the guard — the riskiest code here — so it should be readable in one file
 rather than assembled from a types file and a behavior file. The store adapters follow the
 same rule, which is why they are `app_account.go` and not `store.go`.
 
@@ -546,8 +552,8 @@ app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLink
                  AppAccountStore, AppAccountClient and its device operations —
                  the ownership guard, and the channel-name fan-out with the
                  multi-gang judgement it needs.
-space.go         The spatial door, end to end: SpaceTenant, ErrSpaceNotLinked,
-                 ErrSpaceNotOwned, ErrRootSpaceProtected, SpaceStore, SpaceIoT,
+space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
+                 ErrSpaceNotOwned, ErrOwnerSpaceProtected, SpaceStore, SpaceIoT,
                  SpaceClient — and both guards, the cheap containment check and
                  the bounded subtree walk devices need.
 cloud/
@@ -571,7 +577,7 @@ stores. Remaining work is additive:
 
 - [x] MIT `LICENSE`.
 - [x] Unit tests on both ownership boundaries and Firestore owner validation.
-- [x] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial tenancy model, alongside
+- [x] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial model, alongside
       `AppAccountClient` / `AppAccountStore`, over `cloud/space.go`.
 - [x] Settle Tuya's self-contradicting reference against the live API: parameter spelling,
       response casing, space-ID JSON type, end-of-listing signal, and whether `/space/relation`

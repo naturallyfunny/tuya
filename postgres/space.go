@@ -28,52 +28,52 @@ func NewSpaceStore(ctx context.Context, db Querier, opts ...Option) (*SpaceStore
 	return s, nil
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.SpaceTenant, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT owner, root_space_id, created_at, updated_at FROM tuya_space_tenants WHERE owner = $1 AND deleted_at IS NULL`,
+		`SELECT owner, space_id, created_at, updated_at FROM tuya_spaces WHERE owner = $1 AND deleted_at IS NULL`,
 		owner,
 	)
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("get space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("get space: %w", err)
 	}
-	tenant, err := pgx.CollectOneRow(rows, scanTenant)
+	space, err := pgx.CollectOneRow(rows, scanSpace)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tuya.SpaceTenant{}, tuya.ErrSpaceNotLinked
+		return tuya.Space{}, tuya.ErrSpaceNotLinked
 	}
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("get space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("get space: %w", err)
 	}
-	return tenant, nil
+	return space, nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner string, rootSpaceID cloud.SpaceID) (tuya.SpaceTenant, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID cloud.SpaceID) (tuya.Space, error) {
 	rows, err := s.db.Query(ctx,
-		`INSERT INTO tuya_space_tenants (owner, root_space_id)
+		`INSERT INTO tuya_spaces (owner, space_id)
 		 VALUES ($1, $2)
 		 ON CONFLICT (owner) DO UPDATE
-		   SET root_space_id = EXCLUDED.root_space_id, updated_at = NOW(), deleted_at = NULL
-		 RETURNING owner, root_space_id, created_at, updated_at`,
-		owner, int64(rootSpaceID),
+		   SET space_id = EXCLUDED.space_id, updated_at = NOW(), deleted_at = NULL
+		 RETURNING owner, space_id, created_at, updated_at`,
+		owner, int64(spaceID),
 	)
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("link space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("link space: %w", err)
 	}
-	tenant, err := pgx.CollectOneRow(rows, scanTenant)
+	space, err := pgx.CollectOneRow(rows, scanSpace)
 	if err != nil {
-		return tuya.SpaceTenant{}, fmt.Errorf("link space tenant: %w", err)
+		return tuya.Space{}, fmt.Errorf("link space: %w", err)
 	}
-	return tenant, nil
+	return space, nil
 }
 
 func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	tag, err := s.db.Exec(ctx,
-		`UPDATE tuya_space_tenants
+		`UPDATE tuya_spaces
 		   SET deleted_at = NOW(), updated_at = NOW()
 		 WHERE owner = $1 AND deleted_at IS NULL`,
 		owner,
 	)
 	if err != nil {
-		return fmt.Errorf("unlink space tenant: %w", err)
+		return fmt.Errorf("unlink space: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return tuya.ErrSpaceNotLinked
@@ -84,21 +84,21 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 // The space ID is read as an int64 and converted, rather than scanned straight
 // into cloud.SpaceID: the column is a plain bigint and the named Go type is the
 // domain's, not the driver's.
-func scanTenant(row pgx.CollectableRow) (tuya.SpaceTenant, error) {
+func scanSpace(row pgx.CollectableRow) (tuya.Space, error) {
 	var (
-		tenant      tuya.SpaceTenant
-		rootSpaceID int64
+		space   tuya.Space
+		spaceID int64
 	)
-	if err := row.Scan(&tenant.Owner, &rootSpaceID, &tenant.CreatedAt, &tenant.UpdatedAt); err != nil {
-		return tuya.SpaceTenant{}, err
+	if err := row.Scan(&space.Owner, &spaceID, &space.CreatedAt, &space.UpdatedAt); err != nil {
+		return tuya.Space{}, err
 	}
-	tenant.RootSpaceID = cloud.SpaceID(rootSpaceID)
-	return tenant, nil
+	space.SpaceID = cloud.SpaceID(spaceID)
+	return space, nil
 }
 
 func (s *SpaceStore) validateSchema(ctx context.Context) error {
 	rows, err := s.db.Query(ctx,
-		`SELECT owner, root_space_id, created_at, updated_at FROM tuya_space_tenants LIMIT 0`,
+		`SELECT owner, space_id, created_at, updated_at FROM tuya_spaces LIMIT 0`,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: schema validation: %w", err)
