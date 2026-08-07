@@ -11,19 +11,18 @@ import (
 	"google.golang.org/grpc/status"
 
 	"go.naturallyfunny.dev/tuya"
-	"go.naturallyfunny.dev/tuya/cloud"
 )
 
 const DefaultSpaceCollection = "tuya_spaces"
 
 type spaceDoc struct {
-	SpaceID   cloud.SpaceID `firestore:"space_id"`
-	CreatedAt time.Time     `firestore:"created_at"`
-	UpdatedAt time.Time     `firestore:"updated_at"`
-	DeletedAt *time.Time    `firestore:"deleted_at"`
+	SpaceID   int64      `firestore:"space_id"`
+	CreatedAt time.Time  `firestore:"created_at"`
+	UpdatedAt time.Time  `firestore:"updated_at"`
+	DeletedAt *time.Time `firestore:"deleted_at"`
 }
 
-func (d spaceDoc) space(owner tuya.Owner) tuya.Space {
+func (d spaceDoc) space(owner string) tuya.Space {
 	return tuya.Space{
 		Owner:     owner,
 		SpaceID:   d.SpaceID,
@@ -49,7 +48,7 @@ func NewSpaceStore(client *firestore.Client, opts ...Option) *SpaceStore {
 	}
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner tuya.Owner) (tuya.Space, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return tuya.Space{}, err
@@ -71,7 +70,7 @@ func (s *SpaceStore) Get(ctx context.Context, owner tuya.Owner) (tuya.Space, err
 	return doc.space(owner), nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner tuya.Owner, spaceID cloud.SpaceID) (tuya.Space, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuya.Space, error) {
 	if spaceID == 0 {
 		return tuya.Space{}, errors.New("firestore: space id is zero")
 	}
@@ -104,7 +103,7 @@ func (s *SpaceStore) Link(ctx context.Context, owner tuya.Owner, spaceID cloud.S
 	return space, nil
 }
 
-func (s *SpaceStore) Unlink(ctx context.Context, owner tuya.Owner) error {
+func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	ref, err := s.doc(owner)
 	if err != nil {
 		return err
@@ -139,9 +138,9 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner tuya.Owner) error {
 	return nil
 }
 
-func (s *SpaceStore) doc(owner tuya.Owner) (*firestore.DocumentRef, error) {
+func (s *SpaceStore) doc(owner string) (*firestore.DocumentRef, error) {
 	if err := validateOwner(owner); err != nil {
 		return nil, err
 	}
-	return s.client.Collection(s.collection).Doc(string(owner)), nil
+	return s.client.Collection(s.collection).Doc(owner), nil
 }

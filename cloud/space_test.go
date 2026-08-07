@@ -69,19 +69,6 @@ func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
 	return NewIoT(client), stub
 }
 
-func TestSpaceIDAcceptsNumberAndString(t *testing.T) {
-	for _, raw := range []string{`{"id":150000001,"parent_id":"150000002"}`, `{"id":"150000001","parent_id":150000002}`} {
-		iot, _ := newSpaceIoT(t, raw)
-		space, err := iot.Space(context.Background(), 1)
-		if err != nil {
-			t.Fatalf("Space(%s): unexpected error: %v", raw, err)
-		}
-		if space.ID != 150000001 || space.ParentID != 150000002 {
-			t.Errorf("Space(%s) = id %d, parent %d; want 150000001 and 150000002", raw, space.ID, space.ParentID)
-		}
-	}
-}
-
 func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 	const beyond2Pow53 = 9007199254740993
 	iot, _ := newSpaceIoT(t, fmt.Sprintf(`{"id":%d}`, beyond2Pow53))
@@ -108,7 +95,7 @@ func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{})
+	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
@@ -122,7 +109,7 @@ func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"data":[],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{})
+	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
@@ -136,7 +123,7 @@ func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 
 func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.SpaceResources(context.Background(), 15, Subtree, Page{PageSize: 100, LastRowKey: 5}); err != nil {
+	if _, _, err := iot.SpaceResources(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -160,7 +147,7 @@ func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 
 func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 15, Subtree, Page{PageSize: 100, LastRowKey: 5}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	raw := stub.calls()[0].rawQuery
@@ -169,39 +156,26 @@ func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 	}
 }
 
-func TestDirectChildrenNarrowsTheListing(t *testing.T) {
+func TestOnlySubNarrowsTheListing(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"last_row_key":0,"page_size":200}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, true, Page{}); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	calls := stub.calls()
 	if got := calls[0].query.Get("only_sub"); got != "true" {
-		t.Errorf("only_sub = %q, want true for DirectChildren", got)
+		t.Errorf("only_sub = %q, want true", got)
 	}
 	if got := calls[0].query.Get("space_id"); got != "15" {
 		t.Errorf("space_id = %q, want 15", got)
 	}
 }
 
-func TestListingRejectsAnUnsetScope(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-	if _, _, err := iot.SpaceResources(context.Background(), 15, Scope(0), Page{}); err == nil {
-		t.Error("SpaceResources: got nil error for the zero Scope, want a rejection")
-	}
-	if _, _, err := iot.ListSpaces(context.Background(), 15, Scope(0), Page{}); err == nil {
-		t.Error("ListSpaces: got nil error for the zero Scope, want a rejection")
-	}
-	if calls := stub.calls(); len(calls) != 0 {
-		t.Errorf("made %d requests with an unset scope, want none", len(calls))
-	}
-}
-
 func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 0, DirectChildren, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 0, true, Page{}); err != nil {
 		t.Fatalf("ListSpaces(0): unexpected error: %v", err)
 	}
-	if _, _, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, true, Page{}); err != nil {
 		t.Fatalf("ListSpaces(15): unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -217,8 +191,8 @@ func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 }
 
 func TestListSpacesDecodesIDList(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `{"last_row_key":15000003,"data":[15000002,"15000003"],"page_size":200}`)
-	ids, page, err := iot.ListSpaces(context.Background(), 15, DirectChildren, Page{})
+	iot, _ := newSpaceIoT(t, `{"last_row_key":15000003,"data":[15000002,15000003],"page_size":200}`)
+	ids, page, err := iot.ListSpaces(context.Background(), 15, true, Page{})
 	if err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}

@@ -122,24 +122,21 @@ Three composable tiers. Bind the one your caller needs:
   Device commands go through here — they are addressed by device ID, which is already a Tuya
   handle, so there is nothing for the root doors to resolve.
 
-### Identifiers are named types
+### Identifiers are plain types
 
-The four identifiers this library maps between are distinct types, not bare `string`s and
-`int64`s: **`tuya.Owner`** (yours), and **`cloud.TuyaUID`**, **`cloud.DeviceID`**,
-**`cloud.SpaceID`** (Tuya's). `Owner` sits in the root because only the root has the concept;
-the two Tuya handles sit in `cloud` because `cloud` takes them and cannot import the root.
+Owner, Tuya UID, and device ID are `string`; space ID is `int64`. There are no named wrappers
+around them, and that is deliberate: this package is a wrapper, and a wrapper has no business
+inventing a parallel vocabulary for values it only passes through. `database/sql` takes a
+`string` query; `net/http` takes a `string` URL.
 
-Mapping between identity systems is the whole job here, so the compiler should be the one
-checking it. Both of these used to build and fail at runtime:
+Named types were tried here and taken back out before release. What they were supposed to buy
+was a compiler check on argument order — but an untyped string constant converts to any
+string-based type on its own, so a swapped literal still compiles and `go vet` stays quiet.
+The protection only ever covered variables. What was left was a nicer-looking call site, which
+is not enough to pay for the vocabulary.
 
-```go
-iot.ListDevices(ctx, acc.Owner)          // your owner ID, where Tuya's UID belongs
-client.HasDevice(ctx, deviceID, owner)   // two strings, swapped
-```
-
-The conversion you now write at the edge — `tuya.Owner(userID)` — is the point rather than the
-tax: it marks where your identity system enters this library. Database columns are unchanged;
-the adapters convert when they scan.
+Nothing is converted at the edges, so your own IDs go straight in and database columns are
+unchanged.
 
 Ready-made store adapters ship in-tree — pick one, or implement the interfaces yourself:
 
@@ -226,8 +223,6 @@ wrong data center still mints a token, then refuses every business call, so a cr
 List devices by *your* owner ID, and ask about ownership when you need to know:
 
 ```go
-owner := tuya.Owner(userID)                         // your identity system enters here
-
 devices, err := client.ListDevices(ctx, owner)      // typed devices + per-channel names
 if errors.Is(err, tuya.ErrAccountNotLinked) {
     // route the human into the account-linking flow
@@ -279,14 +274,15 @@ belonging to another owner:
 // The last argument is the page you want. The zero Page is the first one, at Tuya's
 // own page size; hand the returned page back to get the next, once you have checked
 // there is one — a zero LastRowKey means that was the end, not "start over".
-rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, cloud.Page{})
+// onlySub: true lists the direct children, false the whole subtree.
+rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, true, cloud.Page{})
 if next.LastRowKey != 0 {
-    rooms, next, err = hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, next)
+    rooms, next, err = hotel.ChildSpaces(ctx, owner, 0, true, next)
 }
 
 room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin") // under the owner's space
 
-things, next, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree, cloud.Page{})
+things, next, err := hotel.SpaceResources(ctx, owner, room, false, cloud.Page{})
 if errors.Is(err, tuya.ErrSpaceNotOwned) {
     // the space is outside the owner's subtree
 }
@@ -305,9 +301,9 @@ ok, err := hotel.ContainsDevice(ctx, owner, deviceID) // scans the subtree — r
 runs behind every command. If your own database already records which space a device sits in, it
 will answer faster than this ever can, and you should ask it instead.
 
-Listings take an explicit `cloud.Scope` — `cloud.DirectChildren` or `cloud.Subtree` — because
-Tuya's own default for that parameter is undocumented, and a listing that quietly covers the
-wrong depth is exactly what you must not build an ownership check on. Each call returns **one**
+Listings take `only_sub` as a positional argument rather than an option, because Tuya's own
+default for that parameter is undocumented, and a listing that quietly covers the wrong depth
+is exactly what you must not build an ownership check on. It is always sent explicitly. Each call returns **one**
 page plus a `cloud.Page` cursor; see [rationale](#design-rationale) for why the loop is yours.
 
 Deleting the owner's own space is refused (`tuya.ErrOwnerSpaceProtected`): Tuya deletes a space
@@ -323,8 +319,8 @@ revives the row rather than colliding on the key); `Unlink` is a soft-delete (`d
 so `Get` stops returning it while the record is preserved for audit.
 
 ```go
-acc, err := store.Link(ctx, owner, cloud.TuyaUID(uid))   // upsert
-err = store.Unlink(ctx, owner)                           // soft-delete
+acc, err := store.Link(ctx, owner, uid)   // upsert
+err = store.Unlink(ctx, owner)            // soft-delete
 ```
 
 The PostgreSQL store backs this with a `tuya_app_accounts` table (`owner` PK, `tuya_uid`,
@@ -335,7 +331,7 @@ timestamps, `deleted_at`); Firestore with a `tuya_app_accounts` collection (over
 UID (`tuya_spaces` in both backends):
 
 ```go
-space, err := spaces.Link(ctx, owner, cloud.SpaceID(150000001))
+space, err := spaces.Link(ctx, owner, 150000001)
 err = spaces.Unlink(ctx, owner)
 ```
 
@@ -446,13 +442,12 @@ Each one is a domain or usage constraint, not an oversight.
   this ever can, and you should ask it instead. Giving up at the page cap is an error, never a
   `false` — "not there" and "stopped looking" are different answers.
 
-- **`cloud.Scope` is a required argument, not an option with a default.**
-  Tuya's `only_sub` parameter decides whether a listing covers direct children or the whole
-  subtree, and Tuya documents no default. An ownership check built on a listing that quietly
-  covered the wrong depth would be wrong in a way nothing in the code would show, so
-  `SpaceResources` and `ListSpaces` refuse the zero value and make the caller say
-  `DirectChildren` or `Subtree`. The parameter is then always sent explicitly, and Tuya's
-  default never enters the picture.
+- **`only_sub` is a required argument, not an option with a default.**
+  Tuya's `only_sub` parameter decides whether a listing covers direct children (`true`) or the
+  whole subtree (`false`), and Tuya documents no default. An ownership check built on a listing
+  that quietly covered the wrong depth would be wrong in a way nothing in the code would show,
+  so `SpaceResources` and `ListSpaces` take it positionally and always send it explicitly.
+  Tuya's default never enters the picture.
 
 - **The page is an ordinary argument, and it is the same type coming back.**
   Listings used to take `...cloud.PageOption` — `WithPageSize`, `WithLastRowKey`, over a struct
@@ -477,10 +472,12 @@ Each one is a domain or usage constraint, not an oversight.
   that points nowhere near its cause. `url.Values.Encode` sorts, which is why every query here
   is built through it, and a test asserts the ordering survives.
 
-- **`cloud.SpaceID` is a named `int64` that accepts a JSON number *or* a string.**
-  The live API answers with numbers, but Tuya's reference shows space IDs quoted (`"1500****"`),
-  so both decode. It is a `Long`: routing one through `any` or `float64` would corrupt IDs above
-  2^53 in silence, and a test pins that it doesn't.
+- **Space IDs are `int64`, never `any` or `float64`.**
+  A Tuya space ID is a `Long`; routing one through `any` or `float64` would corrupt IDs above
+  2^53 in silence, and a test pins that it doesn't. The live API answers with numbers. Tuya's
+  reference shows them quoted (`"1500****"`), which an earlier `UnmarshalJSON` accepted too —
+  that went out with the named types, so a quoted ID now fails to decode instead of passing
+  quietly.
 
 - **`result: false` is an error for modify and delete, and data for `SpaceRelation`.**
   `Do` hands back the raw result as soon as Tuya says `success: true`, so a delete that answers
@@ -616,10 +613,10 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 - **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
-- **Breaking in v0.10.0: the four identifiers became named types** — `tuya.Owner`,
-  `cloud.TuyaUID`, `cloud.DeviceID`, `cloud.SpaceID`. Every call site that names an owner, a
-  UID, or a device ID needs an explicit conversion; the compiler points at each one. Stored
-  data and DB columns are untouched. See [Concepts](#identifiers-are-named-types).
+- **Breaking in v0.10.0: identifiers are plain `string` and `int64`.** `cloud.SpaceID`,
+  `cloud.Scope` and its `DirectChildren` / `Subtree` constants are gone; listings take
+  `only_sub` as a `bool` (`DirectChildren` → `true`, `Subtree` → `false`). Stored data and DB
+  columns are untouched. See [Concepts](#identifiers-are-plain-types).
 - **Breaking in v0.8.0, alongside the spatial door.** `postgres.Option` and `firestore.Option`
   are now `func(*options)` rather than functions over one store type, so `WithAutoMigrate` and
   `WithCollection` serve both stores; call sites that just pass `postgres.WithAutoMigrate()` or
@@ -651,9 +648,8 @@ space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      DeviceID/TuyaUID + typed Device/DataPoint/Channel + one method per
-                 device endpoint.
-  space.go       SpaceID/Space/Resource/Page/Scope + one method per space endpoint.
+  device.go      typed Device/DataPoint/Channel + one method per device endpoint.
+  space.go       Space/Resource/Page + one method per space endpoint.
 postgres/
   app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.
   space.go       SpaceStore on PostgreSQL.
@@ -678,8 +674,9 @@ stores. Remaining work is additive:
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device and space control (`cloud/home.go`), added as new files
       on `cloud.IoT`.
-- [x] Give the four identifiers named types, so mapping one identity system onto another is
-      checked by the compiler rather than by review.
+- [x] Drop the named identifier types again, back to plain `string` and `int64`: the compiler
+      check they promised never covered literals, and a wrapper should not invent a parallel
+      vocabulary for values it only passes through.
 - [x] Replace the mandatory ownership guards with reportable answers (`HasDevice`,
       `ContainsSpace`, `ContainsDevice`), so consumers with device sharing or their own
       permission model are not locked out. See [Design rationale](#design-rationale).

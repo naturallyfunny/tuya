@@ -7,10 +7,6 @@ import (
 	"net/http"
 )
 
-type DeviceID string
-
-type TuyaUID string
-
 type Channel struct {
 	Identifier string `json:"identifier"`
 	Name       string `json:"name"`
@@ -22,14 +18,14 @@ type DataPoint struct {
 }
 
 type Device struct {
-	ID              DeviceID    `json:"id"`
+	ID              string      `json:"id"`
 	Category        string      `json:"category"`
 	Name            string      `json:"name"`
 	Status          []DataPoint `json:"status"`
 	CodeNameMapping []Channel   `json:"code_name_mapping"`
 }
 
-func (c *IoT) ListDevices(ctx context.Context, tuyaUID TuyaUID) ([]Device, error) {
+func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
@@ -41,7 +37,7 @@ func (c *IoT) ListDevices(ctx context.Context, tuyaUID TuyaUID) ([]Device, error
 	return devices, nil
 }
 
-func (c *IoT) DeviceStatus(ctx context.Context, deviceID DeviceID) ([]DataPoint, error) {
+func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID), nil)
 	if err != nil {
 		return nil, err
@@ -55,7 +51,7 @@ func (c *IoT) DeviceStatus(ctx context.Context, deviceID DeviceID) ([]DataPoint,
 	return status, nil
 }
 
-func (c *IoT) SendCommands(ctx context.Context, deviceID DeviceID, commands []DataPoint) error {
+func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`
 	}{Commands: commands})
@@ -68,7 +64,7 @@ func (c *IoT) SendCommands(ctx context.Context, deviceID DeviceID, commands []Da
 	return nil
 }
 
-func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID DeviceID) ([]Channel, error) {
+func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
 	if err != nil {
 		return nil, err

@@ -14,40 +14,40 @@ import (
 type fakeStore struct {
 	acc      tuya.AppAccount
 	err      error
-	gotOwner tuya.Owner
+	gotOwner string
 }
 
-func (f *fakeStore) Get(_ context.Context, owner tuya.Owner) (tuya.AppAccount, error) {
+func (f *fakeStore) Get(_ context.Context, owner string) (tuya.AppAccount, error) {
 	f.gotOwner = owner
 	return f.acc, f.err
 }
 
-func (f *fakeStore) Link(context.Context, tuya.Owner, cloud.TuyaUID) (tuya.AppAccount, error) {
+func (f *fakeStore) Link(context.Context, string, string) (tuya.AppAccount, error) {
 	panic("Link not expected in these tests")
 }
 
-func (f *fakeStore) Unlink(context.Context, tuya.Owner) error {
+func (f *fakeStore) Unlink(context.Context, string) error {
 	panic("Unlink not expected in these tests")
 }
 
 type fakeIoT struct {
 	devices    []cloud.Device
-	channels   map[cloud.DeviceID][]cloud.Channel
+	channels   map[string][]cloud.Channel
 	listErr    error
 	channelErr error
 	mu         sync.Mutex
-	listUIDs   []cloud.TuyaUID
-	channelIDs []cloud.DeviceID
+	listUIDs   []string
+	channelIDs []string
 }
 
-func (f *fakeIoT) ListDevices(_ context.Context, tuyaUID cloud.TuyaUID) ([]cloud.Device, error) {
+func (f *fakeIoT) ListDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
 	out := make([]cloud.Device, len(f.devices))
 	copy(out, f.devices)
 	return out, f.listErr
 }
 
-func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID cloud.DeviceID) ([]cloud.Channel, error) {
+func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]cloud.Channel, error) {
 	f.mu.Lock()
 	f.channelIDs = append(f.channelIDs, deviceID)
 	f.mu.Unlock()
@@ -97,7 +97,7 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 			{ID: "outlet-1", Category: "cz"},
 			{ID: "sensor-1", Category: "wsdcg"},
 		},
-		channels: map[cloud.DeviceID][]cloud.Channel{
+		channels: map[string][]cloud.Channel{
 			"switch-1": {{Identifier: "switch_1", Name: "Kitchen light"}},
 			"outlet-1": {{Identifier: "switch_1", Name: "Fridge"}},
 		},
@@ -107,7 +107,7 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDevices: unexpected error: %v", err)
 	}
-	byID := map[cloud.DeviceID][]cloud.Channel{}
+	byID := map[string][]cloud.Channel{}
 	for _, d := range got {
 		byID[d.ID] = d.CodeNameMapping
 	}

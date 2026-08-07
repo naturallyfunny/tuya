@@ -3,16 +3,14 @@ package firestore
 import (
 	"strings"
 	"testing"
-
-	"go.naturallyfunny.dev/tuya"
 )
 
 func TestValidateOwner(t *testing.T) {
-	valid := []tuya.Owner{
+	valid := []string{
 		"user-123",
 		"someone@example.com",
 		"a",
-		tuya.Owner(strings.Repeat("x", 1500)),
+		strings.Repeat("x", 1500),
 		"__x", "x__", "___",
 		".hidden", "..dots",
 	}
@@ -21,11 +19,11 @@ func TestValidateOwner(t *testing.T) {
 			t.Errorf("validateOwner(%q): unexpected error: %v", owner, err)
 		}
 	}
-	invalid := []tuya.Owner{
+	invalid := []string{
 		"",
 		".", "..",
 		"owners/alice",
-		tuya.Owner(strings.Repeat("x", 1501)),
+		strings.Repeat("x", 1501),
 		"__reserved__", "____",
 	}
 	for _, owner := range invalid {

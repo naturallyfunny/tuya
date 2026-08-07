@@ -12,27 +12,27 @@ import (
 var _ tuya.SpaceIoT = (*cloud.IoT)(nil)
 
 const (
-	ownerSpace cloud.SpaceID = 15000001
-	insideRoom cloud.SpaceID = 15000002
-	foreign    cloud.SpaceID = 99000001
+	ownerSpace int64 = 15000001
+	insideRoom int64 = 15000002
+	foreign    int64 = 99000001
 )
 
 type fakeSpaceStore struct {
 	space    tuya.Space
 	err      error
-	gotOwner tuya.Owner
+	gotOwner string
 }
 
-func (f *fakeSpaceStore) Get(_ context.Context, owner tuya.Owner) (tuya.Space, error) {
+func (f *fakeSpaceStore) Get(_ context.Context, owner string) (tuya.Space, error) {
 	f.gotOwner = owner
 	return f.space, f.err
 }
 
-func (f *fakeSpaceStore) Link(context.Context, tuya.Owner, cloud.SpaceID) (tuya.Space, error) {
+func (f *fakeSpaceStore) Link(context.Context, string, int64) (tuya.Space, error) {
 	panic("Link not expected in these tests")
 }
 
-func (f *fakeSpaceStore) Unlink(context.Context, tuya.Owner) error {
+func (f *fakeSpaceStore) Unlink(context.Context, string) error {
 	panic("Unlink not expected in these tests")
 }
 
@@ -42,54 +42,54 @@ type resourcePage struct {
 }
 
 type fakeSpaceIoT struct {
-	contains        map[cloud.SpaceID]bool
+	contains        map[int64]bool
 	containsErr     error
 	pages           []resourcePage
 	endlessPages    bool
-	relationQueries [][2]cloud.SpaceID
-	createdParent   cloud.SpaceID
-	queried         cloud.SpaceID
-	modified        cloud.SpaceID
-	deleted         cloud.SpaceID
-	listed          []cloud.SpaceID
-	resourcesOf     cloud.SpaceID
+	relationQueries [][2]int64
+	createdParent   int64
+	queried         int64
+	modified        int64
+	deleted         int64
+	listed          []int64
+	resourcesOf     int64
 	resourceCalls   int
 }
 
-func (f *fakeSpaceIoT) SpaceRelation(_ context.Context, parent, child cloud.SpaceID) (bool, error) {
-	f.relationQueries = append(f.relationQueries, [2]cloud.SpaceID{parent, child})
+func (f *fakeSpaceIoT) SpaceRelation(_ context.Context, parent, child int64) (bool, error) {
+	f.relationQueries = append(f.relationQueries, [2]int64{parent, child})
 	if f.containsErr != nil {
 		return false, f.containsErr
 	}
 	return f.contains[child], nil
 }
 
-func (f *fakeSpaceIoT) CreateSpace(_ context.Context, _ string, parentID cloud.SpaceID, _ string) (cloud.SpaceID, error) {
+func (f *fakeSpaceIoT) CreateSpace(_ context.Context, _ string, parentID int64, _ string) (int64, error) {
 	f.createdParent = parentID
 	return 15000009, nil
 }
 
-func (f *fakeSpaceIoT) Space(_ context.Context, id cloud.SpaceID) (cloud.Space, error) {
+func (f *fakeSpaceIoT) Space(_ context.Context, id int64) (cloud.Space, error) {
 	f.queried = id
 	return cloud.Space{ID: id, Name: "Lobby"}, nil
 }
 
-func (f *fakeSpaceIoT) ModifySpace(_ context.Context, id cloud.SpaceID, _, _ string) error {
+func (f *fakeSpaceIoT) ModifySpace(_ context.Context, id int64, _, _ string) error {
 	f.modified = id
 	return nil
 }
 
-func (f *fakeSpaceIoT) DeleteSpace(_ context.Context, id cloud.SpaceID) error {
+func (f *fakeSpaceIoT) DeleteSpace(_ context.Context, id int64) error {
 	f.deleted = id
 	return nil
 }
 
-func (f *fakeSpaceIoT) ListSpaces(_ context.Context, id cloud.SpaceID, _ cloud.Scope, _ cloud.Page) ([]cloud.SpaceID, cloud.Page, error) {
+func (f *fakeSpaceIoT) ListSpaces(_ context.Context, id int64, _ bool, _ cloud.Page) ([]int64, cloud.Page, error) {
 	f.listed = append(f.listed, id)
-	return []cloud.SpaceID{insideRoom}, cloud.Page{}, nil
+	return []int64{insideRoom}, cloud.Page{}, nil
 }
 
-func (f *fakeSpaceIoT) SpaceResources(_ context.Context, id cloud.SpaceID, _ cloud.Scope, _ cloud.Page) ([]cloud.Resource, cloud.Page, error) {
+func (f *fakeSpaceIoT) SpaceResources(_ context.Context, id int64, _ bool, _ cloud.Page) ([]cloud.Resource, cloud.Page, error) {
 	f.resourcesOf = id
 	f.resourceCalls++
 	if f.endlessPages {
@@ -109,7 +109,7 @@ func newSpaceDoor(t *testing.T, iot *fakeSpaceIoT) *tuya.SpaceClient {
 }
 
 func TestSpaceDoorReachesSpacesInsideTheOwnersSpace(t *testing.T) {
-	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{insideRoom: true}}
+	iot := &fakeSpaceIoT{contains: map[int64]bool{insideRoom: true}}
 	door := newSpaceDoor(t, iot)
 	space, err := door.Space(context.Background(), "owner-1", insideRoom)
 	if err != nil {
@@ -118,13 +118,13 @@ func TestSpaceDoorReachesSpacesInsideTheOwnersSpace(t *testing.T) {
 	if space.ID != insideRoom {
 		t.Errorf("space id = %d, want %d", space.ID, insideRoom)
 	}
-	if len(iot.relationQueries) != 1 || iot.relationQueries[0] != [2]cloud.SpaceID{ownerSpace, insideRoom} {
+	if len(iot.relationQueries) != 1 || iot.relationQueries[0] != [2]int64{ownerSpace, insideRoom} {
 		t.Errorf("relation queries = %v, want one asking whether %d holds %d", iot.relationQueries, ownerSpace, insideRoom)
 	}
 }
 
 func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
-	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{}}
+	iot := &fakeSpaceIoT{contains: map[int64]bool{}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
 	if _, err := door.Space(ctx, "owner-1", foreign); !errors.Is(err, tuya.ErrSpaceNotOwned) {
@@ -136,13 +136,13 @@ func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 	if err := door.DeleteSpace(ctx, "owner-1", foreign); !errors.Is(err, tuya.ErrSpaceNotOwned) {
 		t.Errorf("DeleteSpace error = %v, want ErrSpaceNotOwned", err)
 	}
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", foreign, cloud.DirectChildren, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotOwned) {
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", foreign, true, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotOwned) {
 		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotOwned", err)
 	}
 	if _, err := door.CreateSpace(ctx, "owner-1", "Room 2", foreign, ""); !errors.Is(err, tuya.ErrSpaceNotOwned) {
 		t.Errorf("CreateSpace error = %v, want ErrSpaceNotOwned", err)
 	}
-	if _, _, err := door.SpaceResources(ctx, "owner-1", foreign, cloud.Subtree, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotOwned) {
+	if _, _, err := door.SpaceResources(ctx, "owner-1", foreign, false, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotOwned) {
 		t.Errorf("SpaceResources error = %v, want ErrSpaceNotOwned", err)
 	}
 	if iot.queried != 0 || iot.modified != 0 || iot.deleted != 0 || len(iot.listed) != 0 || iot.createdParent != 0 || iot.resourcesOf != 0 {
@@ -224,7 +224,7 @@ func TestContainsDeviceGivesUpRatherThanPageForever(t *testing.T) {
 }
 
 func TestContainsSpace(t *testing.T) {
-	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{insideRoom: true}}
+	iot := &fakeSpaceIoT{contains: map[int64]bool{insideRoom: true}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
 	ok, err := door.ContainsSpace(ctx, "owner-1", insideRoom)
@@ -270,7 +270,7 @@ func TestZeroSpaceIDMeansTheOwnersSpace(t *testing.T) {
 	if iot.queried != ownerSpace {
 		t.Errorf("queried space %d, want the owner's space %d", iot.queried, ownerSpace)
 	}
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, cloud.DirectChildren, cloud.Page{}); err != nil {
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, cloud.Page{}); err != nil {
 		t.Fatalf("ChildSpaces: unexpected error: %v", err)
 	}
 	if len(iot.listed) != 1 || iot.listed[0] != ownerSpace {
@@ -291,12 +291,12 @@ func TestTheDoorNeverListsTheWholeProject(t *testing.T) {
 	ctx := context.Background()
 	unlinked := &fakeSpaceIoT{}
 	door := tuya.NewSpaceClient(unlinked, &fakeSpaceStore{err: tuya.ErrSpaceNotLinked})
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, cloud.DirectChildren, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotLinked) {
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotLinked) {
 		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotLinked", err)
 	}
 	zeroLink := &fakeSpaceIoT{}
 	door = tuya.NewSpaceClient(zeroLink, &fakeSpaceStore{space: tuya.Space{Owner: "owner-1"}})
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, cloud.DirectChildren, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotLinked) {
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, cloud.Page{}); !errors.Is(err, tuya.ErrSpaceNotLinked) {
 		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotLinked for a zero linked space", err)
 	}
 	for name, iot := range map[string]*fakeSpaceIoT{"unlinked owner": unlinked, "zero linked space": zeroLink} {
@@ -307,7 +307,7 @@ func TestTheDoorNeverListsTheWholeProject(t *testing.T) {
 }
 
 func TestTheOwnersSpaceCannotBeDeletedThroughTheDoor(t *testing.T) {
-	iot := &fakeSpaceIoT{contains: map[cloud.SpaceID]bool{ownerSpace: true}}
+	iot := &fakeSpaceIoT{contains: map[int64]bool{ownerSpace: true}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
 	if err := door.DeleteSpace(ctx, "owner-1", ownerSpace); !errors.Is(err, tuya.ErrOwnerSpaceProtected) {

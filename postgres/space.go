@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"go.naturallyfunny.dev/tuya"
-	"go.naturallyfunny.dev/tuya/cloud"
 )
 
 type SpaceStore struct {
@@ -28,10 +27,10 @@ func NewSpaceStore(ctx context.Context, db Querier, opts ...Option) (*SpaceStore
 	return s, nil
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner tuya.Owner) (tuya.Space, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT owner, space_id, created_at, updated_at FROM tuya_spaces WHERE owner = $1 AND deleted_at IS NULL`,
-		string(owner),
+		owner,
 	)
 	if err != nil {
 		return tuya.Space{}, fmt.Errorf("get space: %w", err)
@@ -46,14 +45,14 @@ func (s *SpaceStore) Get(ctx context.Context, owner tuya.Owner) (tuya.Space, err
 	return space, nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner tuya.Owner, spaceID cloud.SpaceID) (tuya.Space, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuya.Space, error) {
 	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_spaces (owner, space_id)
 		 VALUES ($1, $2)
 		 ON CONFLICT (owner) DO UPDATE
 		   SET space_id = EXCLUDED.space_id, updated_at = NOW(), deleted_at = NULL
 		 RETURNING owner, space_id, created_at, updated_at`,
-		string(owner), int64(spaceID),
+		owner, spaceID,
 	)
 	if err != nil {
 		return tuya.Space{}, fmt.Errorf("link space: %w", err)
@@ -65,12 +64,12 @@ func (s *SpaceStore) Link(ctx context.Context, owner tuya.Owner, spaceID cloud.S
 	return space, nil
 }
 
-func (s *SpaceStore) Unlink(ctx context.Context, owner tuya.Owner) error {
+func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	tag, err := s.db.Exec(ctx,
 		`UPDATE tuya_spaces
 		   SET deleted_at = NOW(), updated_at = NOW()
 		 WHERE owner = $1 AND deleted_at IS NULL`,
-		string(owner),
+		owner,
 	)
 	if err != nil {
 		return fmt.Errorf("unlink space: %w", err)
@@ -82,16 +81,10 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner tuya.Owner) error {
 }
 
 func scanSpace(row pgx.CollectableRow) (tuya.Space, error) {
-	var (
-		space   tuya.Space
-		owner   string
-		spaceID int64
-	)
-	if err := row.Scan(&owner, &spaceID, &space.CreatedAt, &space.UpdatedAt); err != nil {
+	var space tuya.Space
+	if err := row.Scan(&space.Owner, &space.SpaceID, &space.CreatedAt, &space.UpdatedAt); err != nil {
 		return tuya.Space{}, err
 	}
-	space.Owner = tuya.Owner(owner)
-	space.SpaceID = cloud.SpaceID(spaceID)
 	return space, nil
 }
 

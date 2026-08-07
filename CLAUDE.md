@@ -47,8 +47,7 @@ cara tiap pintu memetakan owner ke identifier Tuya. Itu harus terbaca dalam satu
 
 ```
 iot.go         (root, package tuya) Yang dipakai semua pintu: package doc (menyatakan library
-               ini pemeta identitas dan bahwa ia menjawab, bukan memutuskan) + tipe Owner
-               (identitas milik consumer, dipakai kedua pintu) + interface IoT
+               ini pemeta identitas dan bahwa ia menjawab, bukan memutuskan) + interface IoT
                (di-satisfy *cloud.IoT; cuma ListDevices + DeviceChannelNames — pintu
                app-account tidak lagi menyentuh device-addressed endpoint). Tidak ada pintu
                di sini.
@@ -87,15 +86,14 @@ cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. 
   auth.go      Concern auth: request signing (signTokenRequest/signBusinessRequest, hmacSign,
                setAuthHeaders) + token lifecycle (token app-level grant_type=1, fetch/update/
                ensureValidToken). Tuya tanda-tangani token-request vs business-request berbeda.
-  device.go    Domain device: tipe DeviceID + TuyaUID (identifier Tuya; wajib di sini, bukan
-               root, karena cloud tidak boleh mengimpor root) + Device/DataPoint/Channel +
+  device.go    Domain device: Device/DataPoint/Channel +
                empat method *IoT yang
                masing-masing satu endpoint: ListDevices (GET users/{uid}/devices),
                DeviceStatus, SendCommands, DeviceChannelNames (GET devices/{id}/
                multiple-names). Tanpa ownership, tanpa enrichment — keduanya milik root.
                Domain baru → file baru (home.go).
-  space.go     Domain space: tipe SpaceID (terima JSON number MAUPUN string), Space,
-               Resource, Page, Scope, ErrNotApplied, ErrSpaceNotFound, plus delapan method *IoT di atas tujuh
+  space.go     Domain space: Space,
+               Resource, Page, ErrNotApplied, ErrSpaceNotFound, plus delapan method *IoT di atas tujuh
                endpoint /v2.0/cloud/space*: CreateSpace, Space, ModifySpace, DeleteSpace,
                SpaceResources, ListSpaces, SpaceRelation. ListSpaces satu banding satu dengan
                endpoint child: id 0 = space_id tidak dikirim = top level cloud project, persis
@@ -111,8 +109,7 @@ postgres/
                store: Querier, Option/WithAutoMigrate, prepareSchema, migrate.
   space.go     Hal yang sama untuk model spatial (owner -> space_id): SpaceStore.
                Get/Link/Unlink, NewSpaceStore. space_id disimpan bigint dan di-scan
-               lewat int64 sebelum jadi cloud.SpaceID — kolomnya milik driver, tipe
-               bernamanya milik domain.
+               langsung ke field int64-nya.
   migrations/  SQL files, di-embed via //go:embed (000001 tuya_app_accounts,
                000002 tuya_spaces; keduanya soft-delete deleted_at)
 firestore/
@@ -162,11 +159,8 @@ transport, err := cloud.New(accessID, accessSecret, "https://openapi.tuyaus.com"
 iot := cloud.NewIoT(transport)
 client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
 
-// Identitas consumer masuk lewat konversi eksplisit; itu titik jembatannya
-owner := tuya.Owner(userID)
-
 // Resolve owner→uid + channel-name ditangani tuya.AppAccountClient
-devices, err := client.ListDevices(ctx, owner)
+devices, err := client.ListDevices(ctx, userID)
 
 // Kepemilikan itu pertanyaan. Consumer yang memutuskan artinya.
 ok, err := client.HasDevice(ctx, owner, deviceID)
@@ -196,10 +190,11 @@ hotel := tuya.NewSpaceClient(iot, spaces) // iot yang sama, diterima sebagai tuy
 _, err = spaces.Link(ctx, owner, spaceID)
 
 // id 0 = space milik owner sendiri, tidak pernah top level project
+// onlySub: true = anak langsung, false = seluruh subtree
 // cloud.Page{} = halaman pertama; halaman yang dikembalikan diumpankan balik untuk berikutnya
-rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren, cloud.Page{})
+rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, true, cloud.Page{})
 room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "")
-things, next, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree, cloud.Page{})
+things, next, err := hotel.SpaceResources(ctx, owner, room, false, cloud.Page{})
 
 // ContainsDevice men-scan subtree — mahal, jadi ia method tersendiri yang consumer
 // panggil sadar, bukan guard yang jalan diam-diam di tiap perintah
@@ -297,6 +292,27 @@ Jangan pernah edit migration yang sudah di-commit.
   bisnis consumer ("1 space = 1 klien hotel") boleh hidup di README sebagai contoh pemakaian,
   tidak pernah di identifier, nama tabel, atau nama kolom. Tes untuk nama baru: adakah kode
   yang mengecek klaim yang dibawa nama itu?
+- **Wrapper tidak bikin vocabulary paralel: identifier Tuya dioper sebagai tipe telanjang.**
+  `string` untuk owner, tuya uid, device id; `int64` untuk space id. Tidak ada `type DeviceID
+  string` dan kerabatnya. Alasannya posisi: package ini penghubung consumer dengan Tuya, dan
+  Tuya backend sungguhannya — nilai yang cuma dioper tidak berhak punya tipe karangan di sini
+  yang harus dikonversi consumer di tiap call site. Preseden Go: `database/sql` terima `string`
+  query, `net/http` terima `string` URL.
+  Ini pernah dilanggar (Agustus 2026: `Owner`, `cloud.TuyaUID`, `cloud.DeviceID`, `cloud.SpaceID`,
+  `cloud.ResourceType`, `cloud.Scope` sempat masuk) dan dibongkar lagi karena **tiap
+  pembelaannya runtuh saat diperiksa** — ketiganya layak diingat karena terdengar meyakinkan:
+  1. *"`SpaceID.String()` dipakai di 5 path URL"* — `%d` dengan `int64` polos sama saja, dan
+     `encoding/json` **mengabaikan `fmt.Stringer`** sepenuhnya (cuma melihat `MarshalJSON`/
+     `MarshalText`), jadi tidak ada pemakaian implisit yang ikut hilang.
+  2. *"nilai nol `Scope` ditolak, jadi lupa mengisi ketahuan"* — parameter posisional di Go tidak
+     bisa dilupakan, kompilator sudah memaksa. Yang tersisa cuma kasus sempit variabel
+     zero-value, dan `bool` bermasalah persis sama.
+  3. *"named type nyegah argumen tertukar"* — untyped string constant otomatis dikonversi ke tipe
+     apa pun berbasis `string`, jadi literal tetap lolos dan `go vet` diam. Proteksinya cuma
+     berlaku untuk variabel.
+  Tesnya: sebuah tipe boleh ada kalau klaimnya bertahan setelah dicek, bukan setelah diucapkan.
+  Keuntungan kosmetik (keterbacaan call site, "lebih eksplisit") bukan alasan cukup.
+  Rencana pembongkarannya: `REFACTOR.md`, target v0.10.0.
 - **Empat concern dipisah dengan jelas.** `cloud.Client` transport; `cloud.IoT` device-addressed
   Tuya facade; `tuya.AppAccountClient` pemetaan owner→uid + penjawab kepemilikan;
   `postgres.AppAccountStore` account mapping.
@@ -320,10 +336,10 @@ Jangan pernah edit migration yang sudah di-commit.
   consumer yang sudah memirror lokasi device di databasenya menjawab jauh lebih cepat dan memang
   sebaiknya begitu. Menyerah karena kena cap = **error**, bukan `false`: "tidak ketemu" dan
   "berhenti mencari" tidak boleh jadi jawaban yang sama buat consumer yang memutuskan di atasnya.
-- **`Scope` argumen wajib, bukan option.** `only_sub` menentukan kedalaman listing, dan default
-  Tuya untuknya tidak terdokumentasi. Listing yang diam-diam salah kedalaman adalah bahan baku
-  guard yang salah, jadi pemanggil harus menyebut `cloud.DirectChildren` atau `cloud.Subtree`;
-  nilai nol `Scope` ditolak. Ini juga alasan `only_sub` selalu dikirim eksplisit.
+- **`onlySub` argumen posisional, bukan option.** `only_sub` menentukan kedalaman listing, dan
+  default Tuya untuknya tidak terdokumentasi. Listing yang diam-diam salah kedalaman adalah bahan
+  baku guard yang salah, jadi pemanggil harus menyebutnya dan `listQuery` selalu mengirimnya
+  eksplisit — tidak pernah ada jalan di mana `only_sub` hilang dari query.
 - **Query param & response: snake_case, sudah dibuktikan ke API sungguhan** (detail + cara
   ujinya di "Design Notes"). Jangan percaya contoh request/response di doc Tuya yang camelCase —
   itu salah, dan salah ejaan tidak menghasilkan error, cuma diam-diam pakai default server.
@@ -408,31 +424,28 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   membongkarnya lalu merakit ulang jadi options tiap iterasi. Sekarang satu tipe untuk dua arah,
   field nol = tidak dikirim, halaman yang dikembalikan bisa langsung diumpankan balik (setelah
   `LastRowKey != 0` dicek — nol berarti habis, bukan mulai dari awal). Breaking, v0.9.0.
-- **Sejarah: keempat identifier jadi tipe bernama, Agustus 2026, v0.10.0.** `tuya.Owner` di
-  `iot.go`, `cloud.TuyaUID` + `cloud.DeviceID` di `cloud/device.go`, melengkapi `cloud.SpaceID`
-  yang sudah ada. Alasannya bukan kerapian: memetakan identitas consumer ke identifier Tuya
-  adalah satu-satunya tugas library ini, dan sebelum ini `iot.ListDevices(ctx, acc.Owner)`
-  (harusnya `acc.TuyaUID`) dan `HasDevice(ctx, deviceID, owner)` (tertukar) sama-sama kompilasi
-  tanpa keluhan. Sekarang keduanya error saat build — sudah diverifikasi, bukan diasumsikan.
-  Dua turunan yang mudah dibongkar ulang kalau lupa alasannya: **(a)** `cloud.Resource.ID`
-  sengaja tetap `string`. `ContainsDevice` membandingkannya dengan device id lewat konversi di
-  titik banding (`cloud.DeviceID(res.ID) == deviceID`); menjadikan field itu `DeviceID` akan
-  mengklaim semua resource adalah device, padahal `ResourceType` ada justru karena tidak — dan
-  nama yang mengklaim hal yang kodenya tidak cek adalah persis yang dilarang di aturan penamaan
-  di atas. **(b)** Kolom DB tidak berubah; konversi terjadi di store, dan `postgres/app_account.go`
-  dapat `scanAppAccount` supaya sebangun dengan `scanSpace` yang sudah ada. Referensi ke
-  signature ber-`string` di luar repo ini adalah sisa versi ≤ v0.9.x — `agentkit` termasuk.
-- **`SpaceID.MarshalJSON` dihapus karena hasilnya persis sama dengan default.** `type SpaceID
-  int64` sudah di-marshal sebagai JSON number tanpa bantuan siapa pun, termasuk di field
-  ber-`omitempty` (`omitempty` melihat nilai Go-nya, bukan hasil marshal). `UnmarshalJSON` tetap
-  ada karena ia benar-benar bekerja: terima number MAUPUN string.
-  `TestCreateSpaceOmitsTheZeroParent` yang menjaga bentuk body-nya tetap number telanjang.
+- **Sejarah: tipe bernama untuk identifier dicoba lalu dibuang lagi, Agustus 2026, v0.10.0.**
+  Sempat ada `tuya.Owner`, `cloud.TuyaUID`, `cloud.DeviceID`, `cloud.SpaceID`, `cloud.Scope`,
+  `cloud.ResourceType`. Semuanya dicabut sebelum rilis; sekarang `string` dan `int64` telanjang,
+  dan `Scope` jadi `onlySub bool`. Package ini wrapper — penghubung consumer dengan Tuya, dan
+  Tuya backend sungguhannya; wrapper tidak berhak bikin vocabulary paralel untuk nilai yang cuma
+  dioper (`database/sql` terima `string` query, `net/http` terima `string` URL). Pembelaannya
+  runtuh saat diperiksa: `SpaceID.String()` cuma dipakai di path URL, di mana `%d` sama saja
+  (`encoding/json` mengabaikan `fmt.Stringer` sepenuhnya); untyped string constant otomatis
+  dikonversi ke tipe apa pun berbasis `string`, jadi literal yang tertukar tetap lolos dan `go
+  vet` diam; dan parameter posisional di Go tidak bisa dilupakan, jadi guard `Scope` nol cuma
+  kena kasus sempit yang `bool` juga punya. Yang tersisa keuntungan kosmetik di call site, dan
+  itu bukan alasan cukup. **Yang ikut hilang dan disadari:** `SpaceID.UnmarshalJSON` yang menerima
+  JSON number MAUPUN string, beserta `TestSpaceIDAcceptsNumberAndString` — Tuya sungguhan
+  mengirim number (sudah diuji, lihat catatan uji-API nomor 3), jadi bentuk string sekarang gagal
+  decode. Breaking. Referensi ke signature bertipe bernama di luar repo ini adalah sisa commit
+  yang tidak pernah dirilis.
 - **`cloud/space.go` mengikuti gaya `cloud/device.go`: tiap method utuh dari path sampai decode.**
   `decodePage` (yang mengoper `any`), `assertApplied`, dan helper `childSpaces` dilebur ke
   pemanggilnya masing-masing — dua sampai tiga call site, dan hasilnya tiap method terbaca lurus
   tanpa lompat ke helper, dengan struct decode yang bertipe (bukan `any`) dan pesan error yang
-  menyebut operasinya sendiri. `listQuery` sengaja tetap: ia memegang penolakan `Scope` nol, satu
-  aturan yang tidak boleh punya tiga salinan yang bisa berbeda diam-diam.
+  menyebut operasinya sendiri. `listQuery` sengaja tetap: ia memegang jaminan bahwa `only_sub`
+  selalu terkirim, satu aturan yang tidak boleh punya dua salinan yang bisa berbeda diam-diam.
 - **Kontradiksi doc Tuya sudah diuji ke API sungguhan (DC Singapore, 7 Agustus 2026).** Hasilnya,
   dan ini yang dipakai kode sekarang:
   1. **Query param = snake_case.** `page_size=3` mengembalikan 3 baris; `pageSize=3` **diabaikan
@@ -441,8 +454,9 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   2. **Response = snake_case** (`res_id`, `res_type`, `last_row_key`, `page_size`, `id`,
      `root_id`). Contoh camelCase di doc salah. Struct tag biasa sudah cukup.
   3. **Space ID datang sebagai number**, bukan string — `"1500****"` di doc kemungkinan artefak
-     masking. `SpaceID` tetap menerima keduanya (murah, satu method) tapi sekarang jelas mana
-     yang normal.
+     masking. Ini yang dipegang sekarang: field `int64` polos, tanpa `UnmarshalJSON` yang
+     menerima bentuk string. Kalau suatu hari sebuah endpoint mengirim string, gejalanya error
+     decode, bukan diam.
   4. **Halaman terakhir = `data: []` dan field `last_row_key` hilang sama sekali** (jadi
      ter-decode 0). `ContainsDevice` berhenti di situ, plus cursor macet, plus cap.
   5. **`relation` transitif** — `relation(root, cucu) = true`. Guard `assertSpaceOwned` sah.
@@ -474,15 +488,12 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
 - `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile. `SpaceStore` di kedua package ikut pola yang sama.
 - `postgres.NewAppAccountStore(ctx, db, opts...)` / `postgres.NewSpaceStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
 - `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup; runner-nya satu untuk semua tabel, jadi option ini di store mana pun menaikkan seluruh schema
-- Keempat identifier lewat tipe bernama, tidak pernah `string`/`int64`/`any` telanjang:
-  `tuya.Owner` (milik consumer, di `iot.go`) dan `cloud.TuyaUID`/`cloud.DeviceID`/`cloud.SpaceID`
-  (milik Tuya, di `cloud`). `SpaceID` punya alasan tambahan (presisi + Tuya kirim number maupun
-  string); tiga sisanya supaya menukar owner dengan uid atau owner dengan device id gagal saat
-  kompilasi — itu inti pekerjaan library ini, jadi compiler yang mengeceknya. Konversi eksplisit
-  di call site consumer memang tujuannya. Listing space/resource wajib menyebut `cloud.Scope`.
-- Tipe bernama berhenti di tepi driver: kolom DB tetap `text`/`bigint`, argumen query dan hasil
-  scan dikonversi di store (`string(owner)`, `tuya.Owner(owner)`) — persis pola `int64(spaceID)`
-  yang sudah ada. Firestore beda: doc struct-nya memang wire format, jadi ia memegang tipe
-  bernama langsung (`cloud.SpaceID`, `cloud.TuyaUID`), dan yang dikonversi cuma doc ID.
+- Identifier lewat tipe telanjang: owner, Tuya UID, dan device ID `string`; space ID `int64`.
+  Jangan bikin tipe bernama untuknya — sudah dicoba dan dicabut lagi (lihat Design Notes);
+  yang dibeli cuma keterbacaan call site, dan proteksi tukar-argumen yang dijanjikan tidak
+  berlaku untuk literal. Listing space/resource menyebut `onlySub bool`, bukan konstanta.
+- Karena tipenya telanjang, tidak ada konversi di tepi driver: kolom DB tetap `text`/`bigint`,
+  `scanSpace`/`scanAppAccount` men-scan langsung ke field struct-nya, dan doc struct firestore
+  memegang `string`/`int64` yang sama.
 - Empat package: root `tuya` (owner-scoped) + `cloud/` (Tuya murni) + `postgres/` + `firestore/`; tidak ada `pkg/`
 - Conventional commits: `feat:`, `fix:`, `chore(migrate):` dst

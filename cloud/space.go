@@ -8,36 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
-var ErrNotApplied = errors.New("tuya: operation was not applied")
-
-var ErrSpaceNotFound = errors.New("tuya: space not found")
-
-type SpaceID int64
-
-func (s SpaceID) String() string { return strconv.FormatInt(int64(s), 10) }
-
-func (s *SpaceID) UnmarshalJSON(data []byte) error {
-	text := strings.Trim(string(data), `"`)
-	if text == "" || text == "null" {
-		*s = 0
-		return nil
-	}
-	id, err := strconv.ParseInt(text, 10, 64)
-	if err != nil {
-		return fmt.Errorf("failed to parse space id %s: %w", data, err)
-	}
-	*s = SpaceID(id)
-	return nil
-}
-
 type Space struct {
-	ID       SpaceID `json:"id"`
-	Name     string  `json:"name"`
-	ParentID SpaceID `json:"parent_id"`
-	RootID   SpaceID `json:"root_id"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	ParentID int64  `json:"parent_id"`
+	RootID   int64  `json:"root_id"`
 }
 
 type ResourceType int
@@ -54,37 +31,23 @@ type Page struct {
 	PageSize   int   `json:"page_size"`
 }
 
-type Scope int
-
-const (
-	DirectChildren Scope = iota + 1
-	Subtree
-)
-
-func listQuery(scope Scope, page Page) (url.Values, error) {
+func listQuery(onlySub bool, page Page) url.Values {
 	query := url.Values{}
-	switch scope {
-	case DirectChildren:
-		query.Set("only_sub", "true")
-	case Subtree:
-		query.Set("only_sub", "false")
-	default:
-		return nil, fmt.Errorf("invalid scope %d: pass DirectChildren or Subtree", scope)
-	}
+	query.Set("only_sub", strconv.FormatBool(onlySub))
 	if page.LastRowKey != 0 {
 		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
 	}
 	if page.PageSize != 0 {
 		query.Set("page_size", strconv.Itoa(page.PageSize))
 	}
-	return query, nil
+	return query
 }
 
-func (c *IoT) CreateSpace(ctx context.Context, name string, parentID SpaceID, description string) (SpaceID, error) {
+func (c *IoT) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
 	body, err := json.Marshal(struct {
-		Name        string  `json:"name"`
-		ParentID    SpaceID `json:"parent_id,omitempty"`
-		Description string  `json:"description,omitempty"`
+		Name        string `json:"name"`
+		ParentID    int64  `json:"parent_id,omitempty"`
+		Description string `json:"description,omitempty"`
 	}{Name: name, ParentID: parentID, Description: description})
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal space payload: %w", err)
@@ -93,31 +56,35 @@ func (c *IoT) CreateSpace(ctx context.Context, name string, parentID SpaceID, de
 	if err != nil {
 		return 0, err
 	}
-	var id SpaceID
+	var id int64
 	if err := json.Unmarshal(raw, &id); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal created space id: %w", err)
 	}
 	return id, nil
 }
 
-func (c *IoT) Space(ctx context.Context, id SpaceID) (Space, error) {
-	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
+var ErrSpaceNotFound = errors.New("tuya: space not found")
+
+func (c *IoT) Space(ctx context.Context, id int64) (Space, error) {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return Space{}, err
 	}
 	if len(raw) == 0 || string(raw) == "null" {
-		return Space{}, fmt.Errorf("space %s: %w", id, ErrSpaceNotFound)
+		return Space{}, fmt.Errorf("space %d: %w", id, ErrSpaceNotFound)
 	}
 	var space Space
 	if err := json.Unmarshal(raw, &space); err != nil {
-		return Space{}, fmt.Errorf("failed to unmarshal space %s: %w", id, err)
+		return Space{}, fmt.Errorf("failed to unmarshal space %d: %w", id, err)
 	}
 	return space, nil
 }
 
-func (c *IoT) ModifySpace(ctx context.Context, id SpaceID, name, description string) error {
-	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
+var ErrNotApplied = errors.New("tuya: operation was not applied")
+
+func (c *IoT) ModifySpace(ctx context.Context, id int64, name, description string) error {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
 	body, err := json.Marshal(struct {
 		Name        string `json:"name,omitempty"`
 		Description string `json:"description,omitempty"`
@@ -130,41 +97,37 @@ func (c *IoT) ModifySpace(ctx context.Context, id SpaceID, name, description str
 		return err
 	}
 	var applied bool
-	if len(raw) > 0 && string(raw) != "null" {
+	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("failed to unmarshal the result of modifying space %s: %w", id, err)
+			return fmt.Errorf("failed to unmarshal the result of modifying space %d: %w", id, err)
 		}
 	}
 	if !applied {
-		return fmt.Errorf("modify space %s: %w", id, ErrNotApplied)
+		return fmt.Errorf("modify space %d: %w", id, ErrNotApplied)
 	}
 	return nil
 }
 
-func (c *IoT) DeleteSpace(ctx context.Context, id SpaceID) error {
-	path := fmt.Sprintf("/v2.0/cloud/space/%s", id)
+func (c *IoT) DeleteSpace(ctx context.Context, id int64) error {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
 	raw, err := c.client.Do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
 	}
 	var applied bool
-	if len(raw) > 0 && string(raw) != "null" {
+	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("failed to unmarshal the result of deleting space %s: %w", id, err)
+			return fmt.Errorf("failed to unmarshal the result of deleting space %d: %w", id, err)
 		}
 	}
 	if !applied {
-		return fmt.Errorf("delete space %s: %w", id, ErrNotApplied)
+		return fmt.Errorf("delete space %d: %w", id, ErrNotApplied)
 	}
 	return nil
 }
 
-func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, page Page) ([]Resource, Page, error) {
-	query, err := listQuery(scope, page)
-	if err != nil {
-		return nil, Page{}, err
-	}
-	path := fmt.Sprintf("/v2.0/cloud/space/%s/resource?%s", id, query.Encode())
+func (c *IoT) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, listQuery(onlySub, page).Encode())
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, Page{}, err
@@ -175,19 +138,16 @@ func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, page 
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, Page{}, fmt.Errorf("failed to unmarshal the resources of space %s: %w", id, err)
+			return nil, Page{}, fmt.Errorf("failed to unmarshal the resources of space %d: %w", id, err)
 		}
 	}
 	return body.Data, body.Page, nil
 }
 
-func (c *IoT) ListSpaces(ctx context.Context, id SpaceID, scope Scope, page Page) ([]SpaceID, Page, error) {
-	query, err := listQuery(scope, page)
-	if err != nil {
-		return nil, Page{}, err
-	}
+func (c *IoT) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
+	query := listQuery(onlySub, page)
 	if id != 0 {
-		query.Set("space_id", id.String())
+		query.Set("space_id", strconv.FormatInt(id, 10))
 	}
 	path := fmt.Sprintf("/v2.0/cloud/space/child?%s", query.Encode())
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
@@ -195,7 +155,7 @@ func (c *IoT) ListSpaces(ctx context.Context, id SpaceID, scope Scope, page Page
 		return nil, Page{}, err
 	}
 	var body struct {
-		Data []SpaceID `json:"data"`
+		Data []int64 `json:"data"`
 		Page
 	}
 	if len(raw) > 0 {
@@ -206,10 +166,10 @@ func (c *IoT) ListSpaces(ctx context.Context, id SpaceID, scope Scope, page Page
 	return body.Data, body.Page, nil
 }
 
-func (c *IoT) SpaceRelation(ctx context.Context, parent, child SpaceID) (bool, error) {
+func (c *IoT) SpaceRelation(ctx context.Context, parent, child int64) (bool, error) {
 	query := url.Values{}
-	query.Set("parent_id", parent.String())
-	query.Set("child_id", child.String())
+	query.Set("parent_id", strconv.FormatInt(parent, 10))
+	query.Set("child_id", strconv.FormatInt(child, 10))
 	path := fmt.Sprintf("/v2.0/cloud/space/relation?%s", query.Encode())
 	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
