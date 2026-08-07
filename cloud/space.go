@@ -15,6 +15,10 @@ import (
 // success:true alone does not mean the operation took effect.
 var ErrNotApplied = errors.New("tuya: operation was not applied")
 
+// ErrSpaceNotFound reports that Tuya has no such space. It does not say so:
+// asking for a deleted space answers success:true with no result at all.
+var ErrSpaceNotFound = errors.New("tuya: space not found")
+
 // SpaceID is a Tuya space identifier. Live responses carry it as a JSON number,
 // but Tuya's reference shows it quoted, so this accepts either and always
 // renders as a number. It is a Long: never route one through any or float64,
@@ -144,6 +148,10 @@ func decodePage(raw json.RawMessage, data any) (Page, error) {
 // raw result as soon as success is true — so result:false would otherwise read
 // as a success that never happened.
 func assertApplied(raw json.RawMessage) error {
+	// No result at all is not a confirmation, so it is refused like a false one.
+	if len(raw) == 0 || string(raw) == "null" {
+		return ErrNotApplied
+	}
 	var applied bool
 	if err := json.Unmarshal(raw, &applied); err != nil {
 		return fmt.Errorf("failed to unmarshal result: %w", err)
@@ -180,6 +188,9 @@ func (c *IoT) Space(ctx context.Context, id SpaceID) (Space, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, "/v2.0/cloud/space/"+id.String(), nil)
 	if err != nil {
 		return Space{}, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return Space{}, fmt.Errorf("space %s: %w", id, ErrSpaceNotFound)
 	}
 	var space Space
 	if err := json.Unmarshal(raw, &space); err != nil {

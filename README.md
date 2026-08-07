@@ -401,7 +401,11 @@ Each one is a domain or usage constraint, not an oversight.
 
 - **`result: false` is an error for modify and delete, and data for `SpaceContains`.**
   `Do` hands back the raw result as soon as Tuya says `success: true`, so a delete that answers
-  `{"success":true,"result":false}` would otherwise read as a deletion that never happened.
+  `{"success":true,"result":false}` would otherwise read as a deletion that never happened. A
+  *missing* result is treated the same way, because it is not a confirmation either — which is
+  not hypothetical: asking for a space that no longer exists returns `success: true` with no
+  result at all, and `Space` reports that as `cloud.ErrSpaceNotFound` rather than letting a JSON
+  parse error stand in for "gone".
   `ModifySpace` and `DeleteSpace` therefore return `error` alone and translate `false` into
   `cloud.ErrNotApplied` — that is translating a vendor protocol into a Go idiom, the same job
   `Do` does for `code`, not composition. `SpaceContains` returns `(bool, error)` because there
@@ -497,7 +501,7 @@ stalled cursor *and* on a cursor that keeps advancing forever. That suite covers
 the package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
 function).
 
-`cloud` is tested against an `httptest` server (**71.4%** of the package) — real HTTP round trips
+`cloud` is tested against an `httptest` server (**71.8%** of the package) — real HTTP round trips
 over a real socket, not mocks. Two behaviours are worth pinning because they are invisible from
 the outside. The token retry: the stub answers code `1010` and the test asserts the retry
 carried a *different* access token, since a retry that silently replays the rejected token looks

@@ -62,7 +62,7 @@ cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. 
                multiple-names). Tanpa ownership, tanpa enrichment — keduanya milik root.
                Domain baru → file baru (home.go).
   space.go     Domain space: tipe SpaceID (terima JSON number MAUPUN string), Space,
-               Resource, Page, Scope, ErrNotApplied, plus delapan method *IoT di atas tujuh
+               Resource, Page, Scope, ErrNotApplied, ErrSpaceNotFound, plus delapan method *IoT di atas tujuh
                endpoint /v2.0/cloud/space*: CreateSpace, Space, ModifySpace, DeleteSpace,
                SpaceResources, ChildSpaces, RootSpaces, SpaceContains. ChildSpaces dan
                RootSpaces berbagi satu endpoint (child) — dipisah supaya id 0 tidak diam-diam
@@ -256,7 +256,9 @@ Jangan pernah edit migration yang sudah di-commit.
 - **`result: false` diterjemahkan jadi error (`cloud.ErrNotApplied`) untuk modify & delete.**
   `Do` mengembalikan `result` mentah begitu `success: true`, jadi tanpa ini "terhapus" bisa berarti
   tidak terhapus. Untuk `SpaceContains` boolean-nya justru datanya, jadi `false` dikembalikan apa
-  adanya.
+  adanya. `result` yang **tidak ada** diperlakukan sama dengan `false` — dan itu nyata: menanyakan
+  space yang sudah dihapus dijawab `success:true` tanpa `result` sama sekali, jadi `Space`
+  mengembalikan `ErrSpaceNotFound`, bukan error parser JSON.
 - **`RootSpaces` sengaja tidak masuk interface `SpaceIoT`.** Endpoint `child` tanpa `space_id`
   mengembalikan root seluruh cloud project — semua tenant. Ia ada di `cloud` (trusted) sebagai
   method tersendiri supaya `id` 0 tidak diam-diam berarti itu, dan tidak dapat dijangkau dari

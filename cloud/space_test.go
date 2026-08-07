@@ -47,6 +47,12 @@ func (s *spaceStub) handler(w http.ResponseWriter, r *http.Request) {
 	})
 	s.mu.Unlock()
 
+	// An empty result stands for the field being absent, which is how Tuya
+	// answers for a space that is not there.
+	if s.result == "" {
+		fmt.Fprint(w, `{"success":true,"t":1}`)
+		return
+	}
 	fmt.Fprintf(w, `{"success":true,"t":1,"result":%s}`, s.result)
 }
 
@@ -248,6 +254,29 @@ func TestChildSpacesDecodesIDList(t *testing.T) {
 	}
 	if page.LastRowKey != 15000003 {
 		t.Errorf("cursor = %d, want 15000003", page.LastRowKey)
+	}
+}
+
+func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
+	// Asking for a deleted space: Tuya answers success:true and simply omits
+	// the result, which decoded straight would surface as a JSON parse error.
+	for _, result := range []string{``, `null`} {
+		iot, _ := newSpaceIoT(t, result)
+		_, err := iot.Space(context.Background(), 15)
+		if !errors.Is(err, ErrSpaceNotFound) {
+			t.Errorf("Space with result %q: error = %v, want ErrSpaceNotFound", result, err)
+		}
+	}
+}
+
+func TestAMissingResultIsNotAConfirmation(t *testing.T) {
+	iot, _ := newSpaceIoT(t, `null`)
+
+	if err := iot.DeleteSpace(context.Background(), 15); !errors.Is(err, ErrNotApplied) {
+		t.Errorf("DeleteSpace error = %v, want ErrNotApplied", err)
+	}
+	if err := iot.ModifySpace(context.Background(), 15, "Lobby", ""); !errors.Is(err, ErrNotApplied) {
+		t.Errorf("ModifySpace error = %v, want ErrNotApplied", err)
 	}
 }
 
