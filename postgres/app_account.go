@@ -22,17 +22,20 @@ type Querier interface {
 }
 
 type AppAccountStore struct {
-	db          Querier
-	autoMigrate bool
+	db Querier
 }
 
 var _ tuya.AppAccountStore = (*AppAccountStore)(nil)
 
-type Option func(*AppAccountStore)
+type options struct {
+	autoMigrate bool
+}
+
+type Option func(*options)
 
 func WithAutoMigrate() Option {
-	return func(s *AppAccountStore) {
-		s.autoMigrate = true
+	return func(o *options) {
+		o.autoMigrate = true
 	}
 }
 
@@ -41,17 +44,28 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAc
 		panic("postgres: NewAppAccountStore called with nil Querier")
 	}
 	s := &AppAccountStore{db: db}
-	for _, opt := range opts {
-		opt(s)
-	}
-	if s.autoMigrate {
-		if err := s.migrate(ctx); err != nil {
-			return nil, fmt.Errorf("postgres: auto-migrate: %w", err)
-		}
-	} else if err := s.validateSchema(ctx); err != nil {
+	if err := prepareSchema(ctx, db, opts, s.validateSchema); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// prepareSchema either applies every embedded migration or checks that the
+// store's own table is already there. The runner is shared: each store's
+// WithAutoMigrate brings the whole schema up, and every statement is written
+// IF NOT EXISTS so the second store finds nothing left to do.
+func prepareSchema(ctx context.Context, db Querier, opts []Option, validate func(context.Context) error) error {
+	var cfg options
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.autoMigrate {
+		if err := migrate(ctx, db); err != nil {
+			return fmt.Errorf("postgres: auto-migrate: %w", err)
+		}
+		return nil
+	}
+	return validate(ctx)
 }
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
@@ -113,8 +127,8 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	return nil
 }
 
-func (s *AppAccountStore) migrate(ctx context.Context) error {
-	if _, err := s.db.Exec(ctx, `
+func migrate(ctx context.Context, db Querier) error {
+	if _, err := db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS tuya_schema_migrations (
 			version    TEXT        PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -131,7 +145,7 @@ func (s *AppAccountStore) migrate(ctx context.Context) error {
 		if entry.IsDir() || !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		rows, err := s.db.Query(ctx,
+		rows, err := db.Query(ctx,
 			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, name,
 		)
 		if err != nil {
@@ -148,10 +162,10 @@ func (s *AppAccountStore) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("postgres: read %s: %w", name, err)
 		}
-		if _, err := s.db.Exec(ctx, string(content)); err != nil {
+		if _, err := db.Exec(ctx, string(content)); err != nil {
 			return fmt.Errorf("postgres: execute %s: %w", name, err)
 		}
-		if _, err := s.db.Exec(ctx,
+		if _, err := db.Exec(ctx,
 			`INSERT INTO tuya_schema_migrations (version) VALUES ($1)`, name,
 		); err != nil {
 			return fmt.Errorf("postgres: record migration %s: %w", name, err)

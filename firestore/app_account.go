@@ -14,7 +14,7 @@ import (
 	"go.naturallyfunny.dev/tuya"
 )
 
-const DefaultCollection = "tuya_app_accounts"
+const DefaultAppAccountCollection = "tuya_app_accounts"
 
 type accountDoc struct {
 	TuyaUID   string     `firestore:"tuya_uid"`
@@ -37,21 +37,37 @@ type AppAccountStore struct {
 	collection string
 }
 
-type Option func(*AppAccountStore)
+type options struct {
+	collection string
+}
 
+type Option func(*options)
+
+// WithCollection overrides the collection a store reads and writes. Each store
+// keeps its own default, so this applies to whichever one it is passed to.
 func WithCollection(name string) Option {
-	return func(s *AppAccountStore) { s.collection = name }
+	return func(o *options) { o.collection = name }
+}
+
+func collectionOr(fallback string, opts []Option) string {
+	cfg := options{collection: fallback}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.collection == "" {
+		return fallback
+	}
+	return cfg.collection
 }
 
 func NewAppAccountStore(client *firestore.Client, opts ...Option) *AppAccountStore {
 	if client == nil {
 		panic("firestore: NewAppAccountStore called with nil client")
 	}
-	s := &AppAccountStore{client: client, collection: DefaultCollection}
-	for _, opt := range opts {
-		opt(s)
+	return &AppAccountStore{
+		client:     client,
+		collection: collectionOr(DefaultAppAccountCollection, opts),
 	}
-	return s
 }
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {

@@ -30,12 +30,24 @@ app_account.go (root) Pintu app-account, utuh: AppAccount, ErrAccountNotLinked,
                (list-then-contains), isMultiGang (heuristik kategori kg/cz*),
                resolveChannelNames (fan-out concurrent + errors.Join). Semua yang cloud
                tolak putuskan, diputuskan di sini.
-               Pintu kedua (model spatial) → space.go, sejajar, belum ada.
 app_account_test.go
                (package tuya_test) unit test AppAccountClient lewat fake IoT + fake
                AppAccountStore: happy path + ErrAccountNotLinked / ErrDeviceNotOwned,
                short-circuit guard, resolusi channel-name, dan bukti guard tidak ikut
                menembak multiple-names.
+space.go       (root) Pintu spatial, utuh: SpaceTenant, ErrSpaceNotLinked, ErrSpaceNotOwned,
+               ErrRootSpaceProtected, interface SpaceStore + SpaceIoT, struct SpaceClient +
+               NewSpaceClient + Tenant(), lalu operasinya: CreateSpace/Space/ModifySpace/
+               DeleteSpace/ChildSpaces/SpaceResources (resolve owner → assertSpaceOwned →
+               delegate) dan DeviceStatus/SendCommands (resolve → assertDeviceOwned →
+               delegate). Dua guard karena dua biaya: assertSpaceOwned satu request
+               (SpaceContains), assertDeviceOwned menelusuri resource seluruh subtree
+               berhalaman dan berbatas. ID space 0 selalu berarti root milik tenant,
+               tidak pernah root project.
+space_test.go  (package tuya_test) unit test SpaceClient lewat fake SpaceIoT + fake
+               SpaceStore: guard space & device, short-circuit sebelum operasi jalan,
+               ID 0 = root tenant (tanpa nanya Tuya), root tenant tidak bisa dihapus,
+               dan bukti walk device berhenti — cursor macet maupun cursor yang terus maju.
 cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. Sebagian besar
                device-addressed; hanya ListDevices yang butuh Tuya UID.
   client.go    cloud.Client (transport: token cache/refresh app-level, HMAC-SHA256 signing, Do
@@ -48,39 +60,55 @@ cloud/         Package cloud — layer Tuya murni, trusted, tanpa konsep owner. 
                masing-masing satu endpoint: ListDevices (GET users/{uid}/devices),
                DeviceStatus, SendCommands, DeviceChannelNames (GET devices/{id}/
                multiple-names). Tanpa ownership, tanpa enrichment — keduanya milik root.
-               Domain baru → file baru (home.go, space.go).
+               Domain baru → file baru (home.go).
+  space.go     Domain space: tipe SpaceID (terima JSON number MAUPUN string), Space,
+               Resource, Page, Scope, ErrNotApplied, plus delapan method *IoT di atas tujuh
+               endpoint /v2.0/cloud/space*: CreateSpace, Space, ModifySpace, DeleteSpace,
+               SpaceResources, ChildSpaces, RootSpaces, SpaceContains. ChildSpaces dan
+               RootSpaces berbagi satu endpoint (child) — dipisah supaya id 0 tidak diam-diam
+               berubah jadi "lihat seluruh project". Tanpa guard, tanpa loop pagination.
 postgres/
   app_account.go
                App-account management (owner -> tuya_uid): AppAccountStore.Get/Link/Unlink,
                NewAppAccountStore, migrate. Mengembalikan tuya.AppAccount /
-               tuya.ErrAccountNotLinked (import root tuya).
-  migrations/  SQL files, di-embed via //go:embed (tabel tuya_app_accounts, soft-delete deleted_at)
+               tuya.ErrAccountNotLinked (import root tuya). Memegang juga yang dipakai kedua
+               store: Querier, Option/WithAutoMigrate, prepareSchema, migrate.
+  space.go     Hal yang sama untuk model spatial (owner -> root_space_id): SpaceStore.
+               Get/Link/Unlink, NewSpaceStore. root_space_id disimpan bigint dan di-scan
+               lewat int64 sebelum jadi cloud.SpaceID — kolomnya milik driver, tipe
+               bernamanya milik domain.
+  migrations/  SQL files, di-embed via //go:embed (000001 tuya_app_accounts,
+               000002 tuya_space_tenants; keduanya soft-delete deleted_at)
 firestore/
   app_account.go
                Hal yang sama di atas Cloud Firestore: NewAppAccountStore(client,
                opts) — satu dokumen per owner (doc ID = owner, koleksi tuya_app_accounts,
                override via WithCollection), soft-delete deleted_at, Link/Unlink transactional,
                timestamp client-side agar Link bisa return AppAccount tanpa re-read. Tanpa migrasi.
+               Memegang juga yang dipakai bersama: Option/WithCollection, collectionOr,
+               validateOwner.
+  space.go     SpaceStore di atas Firestore, koleksi tuya_space_tenants
+               (DefaultSpaceCollection), pola dokumen & transaksi identik dengan
+               app_account.go.
 ```
 
-Nama file store = nama model tenancy juga, bukan `store.go`. Begitu model spatial masuk,
-tiap package adapter akan punya `space.go` di sebelahnya; `store.go` yang polos tidak punya
-tempat untuk itu.
+Nama file store = nama model tenancy juga, bukan `store.go`. Model spatial sudah masuk, jadi
+tiap package adapter punya `space.go` di sebelah `app_account.go`; `store.go` yang polos
+memang tidak punya tempat untuk itu.
 
 Dependency direction acyclic: **postgres → tuya → cloud**.
 
 ## Cara Pakai
 
 Tiga tier yang dirangkai consumer: `cloud.Client` (transport), `cloud.IoT` (facade
-operasi domain berbasis device/uid), dan `tuya.AppAccountClient` (root, facade berbasis
-owner yang memegang ownership guard). Default & cara termudah untuk agent: pakai
-`tuya.AppAccountClient`.
+operasi domain berbasis device/uid/space), dan dua pintu owner-scoped di root yang memegang
+ownership guard — `tuya.AppAccountClient` dan `tuya.SpaceClient`. Untuk agent, pakai salah
+satu pintu root; yang mana tergantung model tenancy-nya.
 
 Namanya menyebut **model tenancy**, bukan sekadar verbose. Tuya punya dua: app-account
 (tiap manusia punya akun app sendiri, batas tenant = Tuya UID, butuh `AppAccountStore`) dan
-spatial (batas tenant = root space, device di subtree di bawahnya, tanpa UID per tenant).
-Yang sudah dibungkus baru yang pertama; pintu kedua menyusul sebagai `SpaceClient` +
-`SpaceStore`.
+spatial (batas tenant = root space, device di subtree di bawahnya, tanpa UID per tenant,
+butuh `SpaceStore`). Keduanya sudah dibungkus.
 
 Prefix `App` juga memisahkan dua "account" yang beda: **akun app** (punya device, di-key
 uid) vs **akun project** Tuya (pemilik accessID/accessSecret). Call site tetap pendek karena
@@ -109,6 +137,24 @@ ownership guard (trusted context). `DeviceStatus`/`SendCommands` device-addresse
 acc, err := store.Get(ctx, owner)
 devices, err := iot.ListDevices(ctx, acc.TuyaUID) // uid-addressed
 status, err := iot.DeviceStatus(ctx, deviceID)    // device-addressed, tanpa ownership guard
+```
+
+Pintu spatial dirangkai sama persis, cuma store-nya beda. Tenant = satu root space; semua
+yang ada di subtree di bawahnya milik dia.
+
+```go
+tenants, err := postgres.NewSpaceStore(ctx, pool, postgres.WithAutoMigrate())
+hotel := tuya.NewSpaceClient(iot, tenants) // iot yang sama, diterima sebagai tuya.SpaceIoT
+
+_, err = tenants.Link(ctx, owner, rootSpaceID)
+
+// id 0 = root milik tenant sendiri, tidak pernah root project
+rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren)
+room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "")
+things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree)
+
+// device-nya dijaga assertDeviceOwned (telusur subtree), bukan SpaceContains
+err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
 ## Region
@@ -185,6 +231,42 @@ Jangan pernah edit migration yang sudah di-commit.
 - **`cloud.Client.Do` adalah escape hatch publik** untuk endpoint Tuya yang belum dibungkus. Tidak ada
   ownership guard di sini — `Do` melewatinya. Tidak mengekspos `Do` ke caller tak-tepercaya (mis.
   agent) adalah tanggung jawab consumer.
+- **Pintu spatial punya dua guard, karena biayanya dua kelas berbeda.** Menjaga *space*
+  (`assertSpaceOwned`) cukup satu request: `SpaceContains(root, target)` — dan karena containment
+  transitif, ia sekaligus menyelesaikan cascade pada delete (kalau `target` di dalam tenant, seluruh
+  turunannya juga). Menjaga *device* (`assertDeviceOwned`) mahal: Tuya tidak punya endpoint "space
+  mana yang memuat device ini" (sudah dicek: `GET /v2.0/cloud/thing/{device_id}` tidak membawa
+  space/asset id sama sekali), jadi satu-satunya jalan adalah menelusuri resource seluruh subtree
+  berhalaman. Asimetri ini disengaja dan tidak bisa dihilangkan dari sisi kita.
+- **Device guard tetap hidup di library, bukan diserahkan ke consumer.** Alternatifnya pernah
+  ditimbang: consumer yang sudah memirror struktur properti di databasenya bisa menjawab
+  kepemilikan dengan satu query lokal, lebih murah. Tapi tanpa `DeviceStatus`/`SendCommands` di
+  `SpaceClient`, agent yang cuma mau menyalakan lampu harus dipegangi `cloud.IoT` yang tanpa guard —
+  persis yang README larang. Pintu yang tidak bisa menyalakan lampu bukan pintu.
+- **`Scope` argumen wajib, bukan option.** `only_sub` menentukan kedalaman listing, dan default
+  Tuya untuknya tidak terdokumentasi. Listing yang diam-diam salah kedalaman adalah bahan baku
+  guard yang salah, jadi pemanggil harus menyebut `cloud.DirectChildren` atau `cloud.Subtree`;
+  nilai nol `Scope` ditolak. Ini juga alasan `only_sub` selalu dikirim eksplisit.
+- **Query param dikirim dua ejaan sekaligus.** Tabel doc Tuya bilang `only_sub`/`last_row_key`/
+  `page_size`/`space_id`, contoh request di halaman yang sama bilang `onlySub`/`lastRowKey`/
+  `pageSize`/`spaceId`. Keduanya dikirim dengan nilai sama (`setBothCasings`): Tuya mengikat nama
+  yang dia kenal, sisanya diabaikan. Menebak satu lalu salah = parameter jatuh ke default server
+  diam-diam. Buang ejaan yang kalah **setelah** ada bukti dari call sungguhan.
+- **Decoding menerima dua casing untuk tiap nama multi-kata.** Response Tuya campur: pembungkus
+  berhalaman snake_case, objek di dalam `data` camelCase. Hanya nama multi-kata yang bisa beda,
+  jadi hanya itu yang dibaca dua-duanya (`decodeField`). Aturannya sesederhana itu — bukan
+  paranoia menyeluruh.
+- **`result: false` diterjemahkan jadi error (`cloud.ErrNotApplied`) untuk modify & delete.**
+  `Do` mengembalikan `result` mentah begitu `success: true`, jadi tanpa ini "terhapus" bisa berarti
+  tidak terhapus. Untuk `SpaceContains` boolean-nya justru datanya, jadi `false` dikembalikan apa
+  adanya.
+- **`RootSpaces` sengaja tidak masuk interface `SpaceIoT`.** Endpoint `child` tanpa `space_id`
+  mengembalikan root seluruh cloud project — semua tenant. Ia ada di `cloud` (trusted) sebagai
+  method tersendiri supaya `id` 0 tidak diam-diam berarti itu, dan tidak dapat dijangkau dari
+  pintu owner-scoped karena interface-nya tidak menyebutnya.
+- **Root space tenant tidak bisa dihapus lewat pintu** (`ErrRootSpaceProtected`). Tuya menghapus
+  subspace bersama induknya, jadi menghapus root = menghapus seluruh tenancy dan menyisakan mapping
+  yang menggantung. Rename root tetap boleh.
 
 ## Design Notes (catatan yang mudah salah baca)
 
@@ -217,24 +299,50 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   `firestore/store.go` → `app_account.go`; di root `client.go` + `device.go` → `tuya.go`
   (yang dipakai bersama) + `app_account.go`. `tuya.go` menyusul jadi `iot.go`, mengikuti
   interface `IoT` yang dipegangnya.
-  Alasannya dua: memberi tempat pintu spatial (`SpaceClient` + `SpaceStore`) yang menyusul —
-  begitu ada dua, `Client`/`Store` polos tidak lagi memberitahu yang mana — dan menghapus
-  ambiguitas "account" antara akun app dan akun project Tuya.
+  Alasannya dua: memberi tempat pintu spatial (`SpaceClient` + `SpaceStore`, yang kemudian
+  benar-benar datang) — begitu ada dua, `Client`/`Store` polos tidak lagi memberitahu yang
+  mana — dan menghapus ambiguitas "account" antara akun app dan akun project Tuya.
   Method-nya tetap `Account()`, bukan `AppAccount()`: receiver sudah membawa "App", dan
   `app.AppAccount(...)` stutter. `postgres.AppAccountStore` sengaja senama dengan interface
   `tuya.AppAccountStore`; tabrakan hanya ada di prosa, di kode selalu ada kualifikasi package.
   Ini breaking change, rilis v0.7.0. Referensi ke nama-nama lama di luar repo ini adalah sisa
   versi ≤ v0.6.x — `go.naturallyfunny.dev/agentkit` salah satunya (pakai `tuya.Client` dan
   `tuya.Account` di `tuya/adk/toolset.go`), dan perlu disesuaikan saat versinya dinaikkan.
+- **Sejarah: pintu spatial masuk Agustus 2026, v0.8.0.** `cloud/space.go` + `space.go` di root +
+  `space.go` di kedua adapter + migration `000002_space_tenants`. Dua hal ikut berubah dan
+  memutus kompatibilitas: `postgres.Option` sekarang `func(*options)` (bukan
+  `func(*AppAccountStore)`) supaya `WithAutoMigrate` melayani dua store, begitu juga
+  `firestore.Option`; dan `firestore.DefaultCollection` → `DefaultAppAccountCollection`,
+  berdampingan dengan `DefaultSpaceCollection`. Pemakaian `postgres.WithAutoMigrate()` /
+  `firestore.WithCollection(...)` di call site tidak berubah.
+- **Empat pertanyaan Tuya masih BELUM diuji ke API sungguhan** — project Tuya-nya menjawab
+  `28841107 "data center is suspended"` untuk semua business endpoint saat ini, jadi harness
+  verifikasi tidak bisa jalan. Kodenya ditulis supaya benar di kedua kemungkinan, bukan menebak
+  satu. Yang harus dibuktikan begitu data center hidup lagi:
+  1. Ejaan query param mana yang sebenarnya diikat Tuya (`only_sub` atau `onlySub`, dst) →
+     lalu buang yang kalah dari `setBothCasings`.
+  2. Casing field response yang sebenarnya (`res_id` atau `resId`, dst) → boleh sederhanakan
+     `decodeField` kalau ternyata konsisten.
+  3. Bagaimana listing menandai halaman terakhir → `Page` sekarang mendokumentasikan tiga
+     penanda sekaligus dan `assertDeviceOwned` berhenti pada ketiganya + cap 50 halaman.
+  4. **Yang paling penting:** apakah `GET /v2.0/cloud/space/relation` transitif (menjawab
+     `true` untuk cucu, bukan cuma anak langsung). Kalau ternyata hanya anak langsung,
+     `assertSpaceOwned` menolak space bersarang yang sah — fail-closed, jadi tidak bocor, tapi
+     produk rusak untuk hirarki > 1 level, dan guard-nya harus ganti strategi.
+  Cara menguji: `cloud.Client.Do` bisa dipanggil langsung dengan path apa pun; buat
+  root → anak → cucu lewat `CreateSpace`, lalu bandingkan hasil kedua ejaan param dan
+  `relation(root, cucu)`.
 
 ## Conventions
 
 - `cloud.New(...)` mengembalikan `*cloud.Client` (transport); `cloud.NewIoT(c)` membungkusnya jadi `*cloud.IoT` (facade domain)
 - `tuya.NewAppAccountClient(iot, store)` mengembalikan `*tuya.AppAccountClient` (root, pintu owner-scoped model app-account); `iot` diterima sebagai interface `tuya.IoT`
-- Nama pintu & store = nama model tenancy Tuya. `AppAccountClient`/`AppAccountStore` sekarang; `SpaceClient`/`SpaceStore` menyusul. Jangan pakai nama generik `Client` atau `Store`.
-- `AppAccount`, `ErrAccountNotLinked`, `ErrDeviceNotOwned`, interface `AppAccountStore` & `IoT` hidup di root `tuya` (consumer side)
-- `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile.
-- `postgres.NewAppAccountStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
-- `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup
+- `tuya.NewSpaceClient(iot, store)` mengembalikan `*tuya.SpaceClient` (root, pintu owner-scoped model spatial); `iot` diterima sebagai interface `tuya.SpaceIoT`
+- Nama pintu & store = nama model tenancy Tuya: `AppAccountClient`/`AppAccountStore` dan `SpaceClient`/`SpaceStore`. Jangan pakai nama generik `Client` atau `Store`.
+- `AppAccount`, `ErrAccountNotLinked`, interface `AppAccountStore` di `app_account.go`; `SpaceTenant`, `ErrSpaceNotLinked`, `ErrSpaceNotOwned`, `ErrRootSpaceProtected`, interface `SpaceStore` & `SpaceIoT` di `space.go`; `ErrDeviceNotOwned` + interface `IoT` di `iot.go` karena dipakai kedua pintu
+- `postgres.AppAccountStore` & `firestore.AppAccountStore` mengimplementasikan `tuya.AppAccountStore`, mengembalikan `tuya.AppAccount` (import root `tuya`). Keduanya punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile. `SpaceStore` di kedua package ikut pola yang sama.
+- `postgres.NewAppAccountStore(ctx, db, opts...)` / `postgres.NewSpaceStore(ctx, db, opts...)` — terima `Querier` interface, bukan concrete `*pgxpool.Pool`
+- `postgres.WithAutoMigrate()` — option untuk jalankan migration saat startup; runner-nya satu untuk semua tabel, jadi option ini di store mana pun menaikkan seluruh schema
+- Space ID lewat `cloud.SpaceID`, tidak pernah `int64`/`any` telanjang (presisi + Tuya kirim number maupun string). Listing space/resource wajib menyebut `cloud.Scope`.
 - Empat package: root `tuya` (owner-scoped) + `cloud/` (Tuya murni) + `postgres/` + `firestore/`; tidak ada `pkg/`
 - Conventional commits: `feat:`, `fix:`, `chore(migrate):` dst

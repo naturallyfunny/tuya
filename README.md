@@ -6,7 +6,9 @@
 
 A small, interface-first Go library for the [Tuya Cloud OpenAPI](https://developer.tuya.com/en/docs/cloud/).
 It signs and authenticates requests, manages the app-level access token, and exposes typed
-device operations — behind an ownership boundary you can hand to an untrusted caller.
+device and space operations — behind an ownership boundary you can hand to an untrusted caller.
+Both of Tuya's tenancy models get a door: one Tuya account per human, or one root space per
+tenant.
 
 It is built to be used as a **tool invoked by an AI agent**: low-traffic, one action per user
 intent (list devices, read a device's state, send it a command). The design leans on that
@@ -63,11 +65,12 @@ touches it.
 
 Three composable tiers. Bind the one your caller needs:
 
-| You have / need                                         | Use                     | Guarded? |
-| ------------------------------------------------------- | ----------------------- | -------- |
-| Just the transport (token lifecycle, signing, raw `Do`) | `cloud.Client`          | no       |
-| A Tuya UID, want typed device ops                       | `cloud.IoT`             | no       |
-| Your own owner ID, want ownership enforced              | `tuya.AppAccountClient` | **yes**  |
+| You have / need                                          | Use                     | Guarded? |
+| -------------------------------------------------------- | ----------------------- | -------- |
+| Just the transport (token lifecycle, signing, raw `Do`)  | `cloud.Client`          | no       |
+| A Tuya UID or space ID, want typed device and space ops  | `cloud.IoT`             | no       |
+| Your own owner ID, one Tuya app account per human        | `tuya.AppAccountClient` | **yes**  |
+| Your own owner ID, one root space per tenant             | `tuya.SpaceClient`      | **yes**  |
 
 - **`tuya.AppAccountClient`** — the owner-scoped door. Resolves owner → Tuya UID through an
   `AppAccountStore`, asserts the target device belongs to that account (a lean, unenriched
@@ -79,38 +82,46 @@ Three composable tiers. Bind the one your caller needs:
   The name states a **tenancy model**, not verbosity. Tuya has two, and they differ in what
   a tenant *is*. `AppAccountClient` is the app-account model: every human holds their own
   Tuya app account, so the boundary is a Tuya UID and an `AppAccountStore` maps owner → UID.
-  The second is spatial — the boundary is a root space, devices live in the subtree beneath
-  it, and there is no per-tenant UID at all; it is the model Tuya recommends for multi-tenant
-  property (hotels, apartments). Its door will arrive as `SpaceClient` with a `SpaceStore`
-  beside it (see [roadmap](#status--roadmap)), and at that point a bare `Client` would no
-  longer say which model you are holding.
+  A bare `Client` would no longer say which of the two you are holding.
 
   The `App` prefix does a second job: *account* alone is ambiguous here. A Tuya **app
   account** holds devices and is keyed by UID; a Tuya **project account** holds the
   `accessID` / `accessSecret`. Naming the first one precisely is what keeps the two apart.
   Call sites stay short, because the variable name is yours —
   `app := tuya.NewAppAccountClient(...)` then `app.Account(ctx, owner)`.
+- **`tuya.SpaceClient`** — the same door for Tuya's other tenancy model, the spatial one: a
+  tenant *is* a root space, everything it owns hangs in the subtree below it, and there is no
+  per-tenant UID at all. It is what Tuya recommends for multi-tenant property — hotels,
+  apartments, offices. A `SpaceStore` maps owner → root space ID, and every call resolves the
+  owner before it touches a space.
+
+  It carries **two** guards, because they cost different amounts. Space operations ask Tuya one
+  question — *is this space inside that root?* — and containment is transitive, so one boolean
+  also settles deletes: everything under a space you own is yours too. Device operations get no
+  such shortcut; see the [rationale](#design-rationale). Throughout the door, a zero space ID
+  means *the tenant's own root*, never Tuya's project root.
 - **`cloud.Client`** — the transport. Speaks Tuya at the **project level**: one access
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
   raw escape hatch for endpoints not yet wrapped.
 - **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `ListDevices`, `DeviceStatus`,
-  `SendCommands`, `DeviceChannelNames`. One method per Tuya endpoint, so each call is one
-  request and nothing is composed behind your back. No ownership guard; a holder can reach any
-  device the project can. Guarding it is the root package's job.
+  `SendCommands`, `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`,
+  `DeleteSpace`, `SpaceResources`, `ChildSpaces`, `RootSpaces`, `SpaceContains` for spaces. One
+  method per Tuya endpoint, so each call is one request and nothing is composed behind your
+  back — including pagination, which is handed to you a page at a time rather than looped over
+  silently. No ownership guard; a holder can reach any device or space the project can.
+  Guarding it is the root package's job.
 
-Two ready-made `AppAccountStore` adapters ship in-tree — pick one, or implement the interface
-yourself:
+Ready-made store adapters ship in-tree — pick one, or implement the interfaces yourself:
 
-- **`postgres.AppAccountStore`** — the owner → UID mapping in PostgreSQL (`pgx`), with an
-  embedded migration runner.
-- **`firestore.AppAccountStore`** — the same contract on Cloud Firestore: one document per
-  owner, no migrations.
+- **`postgres.AppAccountStore`** / **`postgres.SpaceStore`** — the owner → UID and owner → root
+  space mappings in PostgreSQL (`pgx`), with an embedded migration runner shared by both.
+- **`firestore.AppAccountStore`** / **`firestore.SpaceStore`** — the same contracts on Cloud
+  Firestore: one document per owner, no migrations.
 
-Each adapter deliberately reuses the interface's name rather than a plain `Store`. When the
-spatial model lands, both packages will hold a `SpaceStore` too, and `postgres.Store` would
-have had nowhere left to go. The names only collide in prose; in code the package always
-qualifies them.
+Each adapter deliberately reuses the interface's name rather than a plain `Store`. Now that both
+packages hold a `SpaceStore` as well, a `postgres.Store` would have had nowhere left to go. The
+names only collide in prose; in code the package always qualifies them.
 
 Dependency direction is acyclic and points inward — adapters depend on the root, the root
 depends on `cloud`, and `cloud` depends on nothing of ours:
@@ -147,6 +158,16 @@ iot := cloud.NewIoT(transport)
 
 // 3. The owner-scoped door, for the app-account tenancy model.
 client := tuya.NewAppAccountClient(iot, store) // postgres.AppAccountStore satisfies tuya.AppAccountStore
+```
+
+For the spatial model, swap the store and the door — the transport and facade are the same:
+
+```go
+tenants, err := postgres.NewSpaceStore(ctx, pool, postgres.WithAutoMigrate())
+if err != nil {
+    log.Fatal(err)
+}
+hotel := tuya.NewSpaceClient(iot, tenants) // the same iot, taken as tuya.SpaceIoT
 ```
 
 `cloud.New` prefetches an access token, so a bad credential or unreachable region fails here,
@@ -202,7 +223,37 @@ channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels,
 ```
 
 > `cloud.IoT` and `cloud.Client.Do` carry **no** ownership guard by design. Don't hand them to
-> an untrusted caller (e.g. an agent) — route that traffic through `tuya.AppAccountClient`.
+> an untrusted caller (e.g. an agent) — route that traffic through `tuya.AppAccountClient` or
+> `tuya.SpaceClient`.
+
+### Spaces
+
+With `tuya.SpaceClient`, the tenant is a root space. A zero space ID always means *that* root,
+so the common calls need no ID at all, and nothing reachable here can name a space belonging to
+another tenant:
+
+```go
+rooms, page, err := hotel.ChildSpaces(ctx, owner, 0, cloud.DirectChildren) // one page
+room, err := hotel.CreateSpace(ctx, owner, "Room 201", 0, "twin")          // under my root
+
+things, page, err := hotel.SpaceResources(ctx, owner, room, cloud.Subtree) // devices in it
+err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{
+    {Code: "switch_1", Value: true},                                       // ownership asserted
+})
+if errors.Is(err, tuya.ErrSpaceNotOwned) {
+    // the space is outside this tenant's subtree
+}
+```
+
+Listings take an explicit `cloud.Scope` — `cloud.DirectChildren` or `cloud.Subtree` — because
+Tuya's own default for that parameter is undocumented, and a listing that quietly covers the
+wrong depth is exactly what you must not build an ownership check on. Each call returns **one**
+page plus a `cloud.Page` cursor; see [rationale](#design-rationale) for why the loop is yours.
+
+Deleting the tenant's own root is refused (`tuya.ErrRootSpaceProtected`): Tuya deletes a space
+together with its subspaces, so that one call would erase the whole tenancy and leave your
+mapping pointing at nothing. Unlink it in the store instead, or delete it deliberately through
+`cloud.IoT`.
 
 ## Linking accounts
 
@@ -219,6 +270,14 @@ err = store.Unlink(ctx, owner)                // soft-delete
 The PostgreSQL store backs this with a `tuya_app_accounts` table (`owner` PK, `tuya_uid`,
 timestamps, `deleted_at`); Firestore with a `tuya_app_accounts` collection (override via
 `firestore.WithCollection`), one document per owner keyed by the owner string.
+
+`SpaceStore` is the same lifecycle for the spatial model, keyed to a root space instead of a
+UID (`tuya_space_tenants` in both backends):
+
+```go
+tenant, err := tenants.Link(ctx, owner, cloud.SpaceID(150000001))
+err = tenants.Unlink(ctx, owner)
+```
 
 ### Migrations (PostgreSQL)
 
@@ -285,6 +344,72 @@ Each one is a domain or usage constraint, not an oversight.
   guard also never asks for channel labels — it needs identity, not names, and should not pay
   one request per multi-gang device on every guarded call. A test asserts that.
 
+- **The spatial door carries two guards, because Tuya prices them very differently.**
+  Guarding a *space* costs one request: `GET /v2.0/cloud/space/relation` answers whether a space
+  sits inside the tenant's root, and containment is transitive — which also settles deletes,
+  since everything under a space you own is yours too. Guarding a *device* gets no such
+  shortcut. Tuya has no "which space holds this device" lookup at all: `GET
+  /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset ID.
+  The only route is to walk the subtree's resources and look for the ID, paginated, before every
+  guarded call.
+
+  The library pays that cost rather than passing it on. The alternative — guard spaces only, let
+  each consumer check devices against its own mirror of the property — is genuinely cheaper for
+  a consumer that already stores which room each device is in. But it leaves an agent that only
+  wants to switch a light holding `cloud.IoT`, which is precisely what this README tells you
+  never to do. A door that cannot turn on a lamp is not a door. The walk stops at the first
+  match, so the common case is one request; a consumer that would rather answer from its own
+  database can still bind `cloud.IoT` and guard it itself.
+
+- **`cloud.Scope` is a required argument, not an option with a default.**
+  Tuya's `only_sub` parameter decides whether a listing covers direct children or the whole
+  subtree, and Tuya documents no default. An ownership check built on a listing that quietly
+  covered the wrong depth would be wrong in a way nothing in the code would show, so
+  `SpaceResources` and `ChildSpaces` refuse the zero value and make the caller say
+  `DirectChildren` or `Subtree`. The parameter is then always sent explicitly, and Tuya's
+  default never enters the picture.
+
+- **Every contested query parameter is sent under both spellings.**
+  Tuya's reference tables say `only_sub`, `last_row_key`, `page_size`, `space_id`; its example
+  requests *on the same pages* say `onlySub`, `lastRowKey`, `pageSize`, `spaceId`. The doc
+  contradicts itself, and picking one and being wrong doesn't fail loudly — the parameter is
+  ignored and the server's default silently applies, which for `only_sub` means querying a
+  different depth than you asked for. Both spellings carry the same value, so Tuya binds
+  whichever name it knows and drops the other. It is a stopgap with a clear exit: one live call
+  settles it, and the losing spelling comes out. Responses get the same treatment in reverse —
+  every multi-word field is read under either casing, because Tuya's paged wrapper is snake_case
+  while the objects inside `data` are camelCase.
+
+- **`cloud.SpaceID` is a named `int64` that accepts a JSON number *or* a string.**
+  Tuya answers space creation with `150000001` and space lookup with `"1500****"` — two JSON
+  types for one identifier, in one document. A named type absorbs that in one place instead of
+  at every call site. It is also a `Long`: decoding through `any` or `float64` would corrupt IDs
+  above 2^53 silently, and a test pins that it doesn't.
+
+- **`result: false` is an error for modify and delete, and data for `SpaceContains`.**
+  `Do` hands back the raw result as soon as Tuya says `success: true`, so a delete that answers
+  `{"success":true,"result":false}` would otherwise read as a deletion that never happened.
+  `ModifySpace` and `DeleteSpace` therefore return `error` alone and translate `false` into
+  `cloud.ErrNotApplied` — that is translating a vendor protocol into a Go idiom, the same job
+  `Do` does for `code`, not composition. `SpaceContains` returns `(bool, error)` because there
+  the boolean *is* the answer.
+
+- **Paging is never looped inside `cloud`, and the one loop in the library is bounded.**
+  Tuya documents how to fetch the next page but never how to know there isn't one: its example
+  shows `last_row_key: 0` for a listing that fits in a single response, and says nothing about
+  whether an exhausted cursor comes back as zero, unchanged, or beside an empty `data`. A loop
+  written from a guess is an infinite loop that burns quota. So `cloud` returns one page and the
+  cursor, and the caller composes. The device guard, which has no choice but to walk, treats all
+  three signals as the end and caps how many pages it will read — an undocumented answer costs a
+  refusal, never a hang.
+
+- **`RootSpaces` exists in `cloud`, and deliberately not in `SpaceIoT`.**
+  `GET /v2.0/cloud/space/child` without a `space_id` returns the root spaces of the whole cloud
+  project — every tenant's. It is legitimate for an operator and catastrophic on a tenant-scoped
+  path, so it is a separate method rather than the zero-ID case of `ChildSpaces` (which rejects
+  zero), and the interface the spatial door declares does not mention it. The door cannot call
+  what it cannot name.
+
 - **`cloud.IoT` is one method per Tuya endpoint, with no exceptions.**
   If a method can't be pointed at exactly one endpoint, it is composing behavior, and
   composition belongs to whoever wants it. Two methods used to break this and were moved to the
@@ -331,12 +456,13 @@ To keep the surface honest, the library deliberately does **not**:
   owner; obtaining that UID — the human granting your Tuya project access to their account —
   happens upstream in your onboarding. The library's world begins once you can call
   `store.Link(owner, tuyaUID)`.
-- **Wrap the whole Tuya Cloud OpenAPI.** Only the device operations an agent needs are typed
-  (`ListDevices`, `DeviceStatus`, `SendCommands`). `cloud.Client.Do` is the raw escape hatch for
-  everything else — deliberately unguarded, and not something to hand an agent.
-- **Optimize for throughput.** Ownership is re-checked per call by listing devices, and the token
-  lives in memory. Both are right for sporadic, one-intent-at-a-time agent traffic and would only
-  be rebuilt (caching, invalidation) if a real throughput need appeared. See
+- **Wrap the whole Tuya Cloud OpenAPI.** Only what an agent needs is typed: the device
+  operations and Tuya's seven space-management endpoints. `cloud.Client.Do` is the raw escape
+  hatch for everything else — deliberately unguarded, and not something to hand an agent.
+- **Optimize for throughput.** Ownership is re-checked on every call — a device listing in the
+  app-account model, a subtree walk in the spatial one — and the token lives in memory. Both are
+  right for sporadic, one-intent-at-a-time agent traffic and would only be rebuilt (caching,
+  invalidation) if a real throughput need appeared. See
   [Design rationale](#design-rationale).
 - **Verify trust for `cloud.IoT`.** That layer is device-addressed with no tenant check by design;
   deciding who may hold it is the consumer's job.
@@ -348,17 +474,24 @@ go test ./...
 ```
 
 The root `tuya` package — the ownership boundary, where a bug means a device reaches the wrong
-owner — is unit-tested against fake `IoT` and `AppAccountStore` implementations: happy paths,
-`ErrAccountNotLinked` / `ErrDeviceNotOwned`, the short-circuit guards (a command must never
-reach an unowned device), and the cost guard (an ownership check must never trigger
-channel-name requests). That suite covers **93.0%** of the package's statements. The Firestore
-`validateOwner` rules are table-tested (100% of that function).
+owner — is unit-tested against fake `IoT`, `SpaceIoT` and store implementations: happy paths,
+`ErrAccountNotLinked` / `ErrDeviceNotOwned` / `ErrSpaceNotLinked` / `ErrSpaceNotOwned`, the
+short-circuit guards (a command must never reach an unowned device), and the cost guard (an
+ownership check must never trigger channel-name requests). For the spatial door it also pins
+that a zero space ID resolves to the tenant's own root without asking Tuya, that the tenant root
+cannot be deleted through the door, and that the paginated device walk terminates on a stalled
+cursor *and* on a cursor that keeps advancing forever. That suite covers **88.2%** of the
+package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
+function).
 
-`cloud`'s token retry is tested against an `httptest` server (**61.6%** of the package). That is
-a real HTTP round trip over a real socket, not a mock: the stub answers code `1010` and the test
-asserts the retry carried a *different* access token. The behaviour is worth pinning because it
-is invisible from the outside — a retry that silently replays the rejected token looks identical
-to one that works, until a credential is rotated in production.
+`cloud` is tested against an `httptest` server (**72.0%** of the package) — real HTTP round trips
+over a real socket, not mocks. Two behaviours are worth pinning because they are invisible from
+the outside. The token retry: the stub answers code `1010` and the test asserts the retry
+carried a *different* access token, since a retry that silently replays the rejected token looks
+identical to one that works until a credential is rotated in production. And the space layer's
+tolerance for Tuya's inconsistent JSON: IDs arriving as numbers or strings, fields arriving in
+either casing, a `Long` beyond 2^53 surviving intact, `result:false` becoming an error, and both
+spellings of every contested query parameter going out with the same value.
 
 The rest is integration-shaped by nature: signing against Tuya's live service, and the
 `postgres` / `firestore` stores talking to a real database or the Firestore emulator. Faking a
@@ -370,8 +503,13 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 - **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
+- **Breaking in v0.8.0, alongside the spatial door.** `postgres.Option` and `firestore.Option`
+  are now `func(*options)` rather than functions over one store type, so `WithAutoMigrate` and
+  `WithCollection` serve both stores; call sites that just pass `postgres.WithAutoMigrate()` or
+  `firestore.WithCollection("…")` are unaffected. `firestore.DefaultCollection` is now
+  `firestore.DefaultAppAccountCollection`, beside the new `DefaultSpaceCollection`.
 - **The dependency cost is opt-in.** The root `tuya` package and the `cloud` layer import
-  **only the standard library** — bind those, bring your own `AppAccountStore`, and you add nothing
+  **only the standard library** — bind those, bring your own stores, and you add nothing
   to your module graph. The external dependencies (`jackc/pgx` for `postgres`;
   `cloud.google.com/go/firestore` and gRPC for `firestore`) are compiled only if you import that
   store subpackage.
@@ -384,37 +522,51 @@ rather than assembled from a types file and a behavior file. The store adapters 
 same rule, which is why they are `app_account.go` and not `store.go`.
 
 ```
-tuya.go          Package doc, the consumer-side IoT interface, ErrDeviceNotOwned.
+iot.go           Package doc, the consumer-side IoT interface, ErrDeviceNotOwned.
                  What both doors share.
 app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLinked,
                  AppAccountStore, AppAccountClient and its device operations —
                  the ownership guard, and the channel-name fan-out with the
-                 multi-gang judgement it needs. (space.go joins it later.)
+                 multi-gang judgement it needs.
+space.go         The spatial door, end to end: SpaceTenant, ErrSpaceNotLinked,
+                 ErrSpaceNotOwned, ErrRootSpaceProtected, SpaceStore, SpaceIoT,
+                 SpaceClient — and both guards, the cheap containment check and
+                 the bounded subtree walk devices need.
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
   device.go      typed Device/DataPoint/Channel + one method per device endpoint.
+  space.go       SpaceID/Space/Resource/Page/Scope + one method per space endpoint.
 postgres/
-  app_account.go AppAccountStore on PostgreSQL + embedded migration runner.
+  app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.
+  space.go       SpaceStore on PostgreSQL.
   migrations/    embedded .up.sql / .down.sql.
 firestore/
   app_account.go AppAccountStore on Cloud Firestore (schemaless, no migrations).
+  space.go       SpaceStore on Cloud Firestore.
 ```
 
 ## Status & roadmap
 
-The public API above is stable and in use — the owner-scoped door, the `cloud` split, and both
+The public API above is stable and in use — the owner-scoped doors, the `cloud` split, and the
 stores. Remaining work is additive:
 
 - [x] MIT `LICENSE`.
-- [x] Unit tests on the ownership boundary (root package, 95.8%) and Firestore owner validation.
+- [x] Unit tests on both ownership boundaries and Firestore owner validation.
+- [x] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial tenancy model, alongside
+      `AppAccountClient` / `AppAccountStore`, over `cloud/space.go`.
+- [ ] **Confirm four points against the live API.** The space layer is written from Tuya's
+      reference docs and is deliberately correct under *both* readings wherever those docs
+      contradict themselves, but none of it has been exercised against a live data center yet.
+      What a first live run should settle: which spelling of the paged query parameters Tuya
+      actually binds; whether responses really mix casing; how a listing signals its last page;
+      and — the one that matters most — whether `/v2.0/cloud/space/relation` answers `true` for
+      a *descendant* or only a direct child. If it turns out to be direct-only, the space guard
+      refuses legitimate nested spaces: fail-closed, so nothing leaks, but hierarchies deeper
+      than one level would need a different guard.
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
-- [ ] Further Tuya domains beyond device control (`cloud/home.go`, `cloud/space.go`), added as
-      new files on `cloud.IoT`.
-- [ ] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial tenancy model, alongside
-      `AppAccountClient` / `AppAccountStore`.
-      Its guard depends on whether Tuya's space query returns a whole subtree or one level,
-      so it waits on `cloud/space.go`.
+- [ ] Further Tuya domains beyond device and space control (`cloud/home.go`), added as new files
+      on `cloud.IoT`.
 - [ ] Ownership-check caching — deferred until a real throughput need justifies the invalidation
       cost.
 
