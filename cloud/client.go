@@ -1,4 +1,3 @@
-// Package cloud is the pure-Tuya layer of the library, keyed by Tuya UID.
 package cloud
 
 import (
