@@ -57,19 +57,6 @@ func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]clo
 	return devices, nil
 }
 
-// HasDevice reports whether deviceID is listed under the Tuya account linked to
-// owner. It is the app-account half of the only question this library is in a
-// position to answer, since it alone holds the owner -> UID mapping.
-//
-// It is a fact, not a verdict. A false is not automatically a refusal: a
-// consumer that shares devices between accounts will see false for a device its
-// own rules allow, and is expected to consult those rules next. Acting on the
-// answer is the caller's job — this package never blocks a device call on it.
-//
-// The cost is one request to Tuya, flat regardless of how many devices the
-// account holds. Nothing is cached: invalidation would need to know when a
-// device is added, removed or re-linked, and Tuya reports none of those.
-// A caller that does know is better placed to cache this than the library is.
 func (c *AppAccountClient) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
 	acc, err := c.store.Get(ctx, owner)
 	if err != nil {

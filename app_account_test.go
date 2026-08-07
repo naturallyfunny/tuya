@@ -173,9 +173,6 @@ func TestHasDevice(t *testing.T) {
 	}
 }
 
-// A device the account does not list is reported as a plain false, not an error.
-// That answer is a fact for the caller to weigh — a consumer sharing devices
-// across accounts will see false for a device its own rules allow.
 func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{devices: []cloud.Device{{ID: "someone-elses-device"}}}
@@ -201,7 +198,6 @@ func TestHasDeviceAccountNotLinked(t *testing.T) {
 	}
 }
 
-// A lookup that failed must not read as "the account does not have it".
 func TestHasDeviceSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}

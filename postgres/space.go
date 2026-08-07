@@ -81,9 +81,6 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	return nil
 }
 
-// The space ID is read as an int64 and converted, rather than scanned straight
-// into cloud.SpaceID: the column is a plain bigint and the named Go type is the
-// domain's, not the driver's.
 func scanSpace(row pgx.CollectableRow) (tuya.Space, error) {
 	var (
 		space   tuya.Space

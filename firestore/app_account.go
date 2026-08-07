@@ -43,8 +43,6 @@ type options struct {
 
 type Option func(*options)
 
-// WithCollection overrides the collection a store reads and writes. Each store
-// keeps its own default, so this applies to whichever one it is passed to.
 func WithCollection(name string) Option {
 	return func(o *options) { o.collection = name }
 }

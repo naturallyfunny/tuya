@@ -13,7 +13,6 @@ import (
 	"go.naturallyfunny.dev/tuya"
 )
 
-//go:embed migrations
 var migrationFiles embed.FS
 
 type Querier interface {
@@ -50,10 +49,6 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAc
 	return s, nil
 }
 
-// prepareSchema either applies every embedded migration or checks that the
-// store's own table is already there. The runner is shared: each store's
-// WithAutoMigrate brings the whole schema up, and every statement is written
-// IF NOT EXISTS so the second store finds nothing left to do.
 func prepareSchema(ctx context.Context, db Querier, opts []Option, validate func(context.Context) error) error {
 	var cfg options
 	for _, opt := range opts {

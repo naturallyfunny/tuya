@@ -11,18 +11,10 @@ import (
 	"strings"
 )
 
-// ErrNotApplied reports that Tuya accepted a request but answered result:false.
-// success:true alone does not mean the operation took effect.
 var ErrNotApplied = errors.New("tuya: operation was not applied")
 
-// ErrSpaceNotFound reports that Tuya has no such space. It does not say so:
-// asking for a deleted space answers success:true with no result at all.
 var ErrSpaceNotFound = errors.New("tuya: space not found")
 
-// SpaceID is a Tuya space identifier. Live responses carry it as a JSON number,
-// but Tuya's reference shows it quoted, so this accepts either and always
-// renders as a number. It is a Long: never route one through any or float64,
-// which lose precision above 2^53.
 type SpaceID int64
 
 func (s SpaceID) String() string { return strconv.FormatInt(int64(s), 10) }
@@ -43,7 +35,6 @@ func (s *SpaceID) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Space is a node of the tenancy tree. A root space carries no parent_id.
 type Space struct {
 	ID       SpaceID `json:"id"`
 	Name     string  `json:"name"`
@@ -60,19 +51,11 @@ type Resource struct {
 	Type ResourceType `json:"res_type"`
 }
 
-// Page is one page of a listing. The last page arrives as an empty data slice
-// with no cursor at all, so a LastRowKey of zero means the walk is over. A
-// cursor that repeats the one just sent means the same thing; a caller paging
-// to the end should stop on either rather than trust one signal.
 type Page struct {
 	LastRowKey int64 `json:"last_row_key"`
 	PageSize   int   `json:"page_size"`
 }
 
-// Scope selects how deep a listing reaches. It is a required argument rather
-// than an option because Tuya documents no default for only_sub, and a listing
-// that silently covers the wrong depth is exactly what a caller building an
-// ownership check must not get.
 type Scope int
 
 const (
@@ -87,22 +70,14 @@ type pageQuery struct {
 	pageSize   *int
 }
 
-// WithLastRowKey resumes a listing at the cursor Tuya returned in Page.LastRowKey.
 func WithLastRowKey(cursor int64) PageOption {
 	return func(q *pageQuery) { q.lastRowKey = &cursor }
 }
 
-// WithPageSize caps the entries Tuya returns per page. Tuya documents no
-// maximum: its reference example answers page_size 200 to a request for 100.
 func WithPageSize(size int) PageOption {
 	return func(q *pageQuery) { q.pageSize = &size }
 }
 
-// Tuya's example requests spell these parameters onlySub, lastRowKey, pageSize
-// and spaceId, but the live API binds only the snake_case names its reference
-// tables list — a camelCase page_size is ignored and the server default applies
-// silently. Encode also matters: Tuya sorts query parameters before checking
-// the signature, so url.Values keeps them in the one order it accepts.
 func listQuery(scope Scope, opts []PageOption) (url.Values, error) {
 	var onlySub string
 	switch scope {
@@ -128,8 +103,6 @@ func listQuery(scope Scope, opts []PageOption) (url.Values, error) {
 	return query, nil
 }
 
-// A listing arrives as its rows plus the cursor fields beside them; the last
-// one carries no cursor at all, which is what leaves Page zeroed.
 func decodePage(raw json.RawMessage, data any) (Page, error) {
 	if len(raw) == 0 {
 		return Page{}, nil
@@ -144,11 +117,7 @@ func decodePage(raw json.RawMessage, data any) (Page, error) {
 	return body.Page, nil
 }
 
-// Tuya answers modify and delete with a bare boolean, and Do hands back that
-// raw result as soon as success is true — so result:false would otherwise read
-// as a success that never happened.
 func assertApplied(raw json.RawMessage) error {
-	// No result at all is not a confirmation, so it is refused like a false one.
 	if len(raw) == 0 || string(raw) == "null" {
 		return ErrNotApplied
 	}
@@ -162,8 +131,6 @@ func assertApplied(raw json.RawMessage) error {
 	return nil
 }
 
-// CreateSpace creates a space and returns its ID. A zero parentID creates a
-// first-level space.
 func (c *IoT) CreateSpace(ctx context.Context, name string, parentID SpaceID, description string) (SpaceID, error) {
 	body, err := json.Marshal(struct {
 		Name        string  `json:"name"`
@@ -217,7 +184,6 @@ func (c *IoT) ModifySpace(ctx context.Context, id SpaceID, name, description str
 	return nil
 }
 
-// DeleteSpace deletes a space. Tuya deletes its subspaces along with it.
 func (c *IoT) DeleteSpace(ctx context.Context, id SpaceID) error {
 	raw, err := c.client.Do(ctx, http.MethodDelete, "/v2.0/cloud/space/"+id.String(), nil)
 	if err != nil {
@@ -229,9 +195,6 @@ func (c *IoT) DeleteSpace(ctx context.Context, id SpaceID) error {
 	return nil
 }
 
-// SpaceResources returns one page of the resources held by a space, devices
-// among them. It is one request: paging to the end is the caller's composition,
-// under the stop conditions documented on Page.
 func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, opts ...PageOption) ([]Resource, Page, error) {
 	query, err := listQuery(scope, opts)
 	if err != nil {
@@ -250,8 +213,6 @@ func (c *IoT) SpaceResources(ctx context.Context, id SpaceID, scope Scope, opts 
 	return resources, page, nil
 }
 
-// ChildSpaces returns one page of the spaces below id. A zero id is rejected:
-// Tuya reads that as the whole project, which RootSpaces asks for deliberately.
 func (c *IoT) ChildSpaces(ctx context.Context, id SpaceID, scope Scope, opts ...PageOption) ([]SpaceID, Page, error) {
 	if id == 0 {
 		return nil, Page{}, errors.New("ChildSpaces needs a space id; call RootSpaces for the project's top level")
@@ -264,9 +225,6 @@ func (c *IoT) ChildSpaces(ctx context.Context, id SpaceID, scope Scope, opts ...
 	return c.childSpaces(ctx, query)
 }
 
-// RootSpaces returns one page of the spaces at the top level of the cloud
-// project, all of them at once. The owner-scoped door in the root package
-// leaves it out of its interface on purpose: no owner may ask for this.
 func (c *IoT) RootSpaces(ctx context.Context, scope Scope, opts ...PageOption) ([]SpaceID, Page, error) {
 	query, err := listQuery(scope, opts)
 	if err != nil {
@@ -288,10 +246,6 @@ func (c *IoT) childSpaces(ctx context.Context, query url.Values) ([]SpaceID, Pag
 	return ids, page, nil
 }
 
-// SpaceContains reports whether child sits under parent, at any depth — Tuya
-// answers true for a grandchild. Two edges it does not document: a space
-// compared against itself answers false, and a space outside the project is
-// refused as CodeNoSpacePermission rather than answered false.
 func (c *IoT) SpaceContains(ctx context.Context, parent, child SpaceID) (bool, error) {
 	query := url.Values{}
 	query.Set("parent_id", parent.String())

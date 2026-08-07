@@ -15,8 +15,7 @@ import (
 )
 
 type spaceStub struct {
-	mu sync.Mutex
-
+	mu       sync.Mutex
 	result   string
 	requests []recordedRequest
 }
@@ -36,7 +35,6 @@ func (s *spaceStub) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
-
 	s.mu.Lock()
 	s.requests = append(s.requests, recordedRequest{
 		method:   r.Method,
@@ -46,9 +44,6 @@ func (s *spaceStub) handler(w http.ResponseWriter, r *http.Request) {
 		body:     string(body),
 	})
 	s.mu.Unlock()
-
-	// An empty result stands for the field being absent, which is how Tuya
-	// answers for a space that is not there.
 	if s.result == "" {
 		fmt.Fprint(w, `{"success":true,"t":1}`)
 		return
@@ -67,7 +62,6 @@ func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
 	stub := &spaceStub{result: result}
 	server := httptest.NewServer(http.HandlerFunc(stub.handler))
 	t.Cleanup(server.Close)
-
 	client, err := New("access-id", "access-secret", server.URL, WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("New: unexpected error: %v", err)
@@ -76,7 +70,6 @@ func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
 }
 
 func TestSpaceIDAcceptsNumberAndString(t *testing.T) {
-	// Live answers are numbers; Tuya's reference quotes them. Decode both.
 	for _, raw := range []string{`{"id":150000001,"parent_id":"150000002"}`, `{"id":"150000001","parent_id":150000002}`} {
 		iot, _ := newSpaceIoT(t, raw)
 		space, err := iot.Space(context.Background(), 1)
@@ -92,7 +85,6 @@ func TestSpaceIDAcceptsNumberAndString(t *testing.T) {
 func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 	const beyond2Pow53 = 9007199254740993
 	iot, _ := newSpaceIoT(t, fmt.Sprintf(`{"id":%d}`, beyond2Pow53))
-
 	space, err := iot.Space(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("Space: unexpected error: %v", err)
@@ -104,7 +96,6 @@ func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 
 func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"id":1,"name":"Lobby","parent_id":2,"root_id":3}`)
-
 	space, err := iot.Space(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("Space: unexpected error: %v", err)
@@ -117,7 +108,6 @@ func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
-
 	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
@@ -131,9 +121,7 @@ func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 }
 
 func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
-	// Exactly what Tuya answers past the end: rows gone, no last_row_key at all.
 	iot, _ := newSpaceIoT(t, `{"data":[],"page_size":3}`)
-
 	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
@@ -148,17 +136,13 @@ func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 
 func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-
 	if _, _, err := iot.SpaceResources(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
-
 	calls := stub.calls()
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
-	// Only snake_case is bound; a camelCase name is ignored and the server
-	// default applies in silence.
 	for name, want := range map[string]string{"only_sub": "false", "page_size": "100", "last_row_key": "5"} {
 		if got := calls[0].query.Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
@@ -175,14 +159,10 @@ func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 }
 
 func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
-	// Tuya sorts the query before checking the signature; an unsorted one is
-	// rejected as code 1004, and the failure looks nothing like its cause.
 	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
-
 	if _, _, err := iot.ChildSpaces(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
 		t.Fatalf("ChildSpaces: unexpected error: %v", err)
 	}
-
 	raw := stub.calls()[0].rawQuery
 	if !sort.StringsAreSorted(strings.Split(raw, "&")) {
 		t.Errorf("query %q is not in ASCII order", raw)
@@ -191,11 +171,9 @@ func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 
 func TestDirectChildrenNarrowsTheListing(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[],"last_row_key":0,"page_size":200}`)
-
 	if _, _, err := iot.ChildSpaces(context.Background(), 15, DirectChildren); err != nil {
 		t.Fatalf("ChildSpaces: unexpected error: %v", err)
 	}
-
 	calls := stub.calls()
 	if got := calls[0].query.Get("only_sub"); got != "true" {
 		t.Errorf("only_sub = %q, want true for DirectChildren", got)
@@ -207,7 +185,6 @@ func TestDirectChildrenNarrowsTheListing(t *testing.T) {
 
 func TestListingRejectsAnUnsetScope(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-
 	if _, _, err := iot.SpaceResources(context.Background(), 15, Scope(0)); err == nil {
 		t.Error("SpaceResources: got nil error for the zero Scope, want a rejection")
 	}
@@ -221,15 +198,12 @@ func TestListingRejectsAnUnsetScope(t *testing.T) {
 
 func TestChildSpacesRejectsTheZeroSpaceID(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `{"data":[]}`)
-
-	// Zero would make Tuya list the whole project; only RootSpaces asks for that.
 	if _, _, err := iot.ChildSpaces(context.Background(), 0, DirectChildren); err == nil {
 		t.Error("ChildSpaces(0): got nil error, want a rejection")
 	}
 	if calls := stub.calls(); len(calls) != 0 {
 		t.Errorf("made %d requests, want none", len(calls))
 	}
-
 	if _, _, err := iot.RootSpaces(context.Background(), DirectChildren); err != nil {
 		t.Fatalf("RootSpaces: unexpected error: %v", err)
 	}
@@ -244,7 +218,6 @@ func TestChildSpacesRejectsTheZeroSpaceID(t *testing.T) {
 
 func TestChildSpacesDecodesIDList(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `{"last_row_key":15000003,"data":[15000002,"15000003"],"page_size":200}`)
-
 	ids, page, err := iot.ChildSpaces(context.Background(), 15, DirectChildren)
 	if err != nil {
 		t.Fatalf("ChildSpaces: unexpected error: %v", err)
@@ -258,8 +231,6 @@ func TestChildSpacesDecodesIDList(t *testing.T) {
 }
 
 func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
-	// Asking for a deleted space: Tuya answers success:true and simply omits
-	// the result, which decoded straight would surface as a JSON parse error.
 	for _, result := range []string{``, `null`} {
 		iot, _ := newSpaceIoT(t, result)
 		_, err := iot.Space(context.Background(), 15)
@@ -271,7 +242,6 @@ func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
 
 func TestAMissingResultIsNotAConfirmation(t *testing.T) {
 	iot, _ := newSpaceIoT(t, `null`)
-
 	if err := iot.DeleteSpace(context.Background(), 15); !errors.Is(err, ErrNotApplied) {
 		t.Errorf("DeleteSpace error = %v, want ErrNotApplied", err)
 	}
@@ -281,9 +251,7 @@ func TestAMissingResultIsNotAConfirmation(t *testing.T) {
 }
 
 func TestModifyAndDeleteRejectResultFalse(t *testing.T) {
-	// success:true with result:false is Tuya saying "accepted, not applied".
 	iot, _ := newSpaceIoT(t, `false`)
-
 	if err := iot.ModifySpace(context.Background(), 15, "Lobby", ""); !errors.Is(err, ErrNotApplied) {
 		t.Errorf("ModifySpace error = %v, want ErrNotApplied", err)
 	}
@@ -294,14 +262,12 @@ func TestModifyAndDeleteRejectResultFalse(t *testing.T) {
 
 func TestModifyAndDeleteAcceptResultTrue(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `true`)
-
 	if err := iot.ModifySpace(context.Background(), 15, "Lobby", "front desk"); err != nil {
 		t.Fatalf("ModifySpace: unexpected error: %v", err)
 	}
 	if err := iot.DeleteSpace(context.Background(), 15); err != nil {
 		t.Fatalf("DeleteSpace: unexpected error: %v", err)
 	}
-
 	calls := stub.calls()
 	if calls[0].method != http.MethodPut || calls[0].path != "/v2.0/cloud/space/15" {
 		t.Errorf("modify sent %s %s", calls[0].method, calls[0].path)
@@ -316,7 +282,6 @@ func TestModifyAndDeleteAcceptResultTrue(t *testing.T) {
 
 func TestCreateSpaceOmitsTheZeroParent(t *testing.T) {
 	iot, stub := newSpaceIoT(t, `150000001`)
-
 	id, err := iot.CreateSpace(context.Background(), "Hotel", 0, "")
 	if err != nil {
 		t.Fatalf("CreateSpace: unexpected error: %v", err)
@@ -327,21 +292,17 @@ func TestCreateSpaceOmitsTheZeroParent(t *testing.T) {
 	if _, err := iot.CreateSpace(context.Background(), "Room 1", 150000001, "twin"); err != nil {
 		t.Fatalf("CreateSpace: unexpected error: %v", err)
 	}
-
 	calls := stub.calls()
 	if calls[0].body != `{"name":"Hotel"}` {
 		t.Errorf("first body = %s, want no parent_id and no description", calls[0].body)
 	}
-	// A Long, never a quoted string: Tuya's own field is numeric here.
 	if calls[1].body != `{"name":"Room 1","parent_id":150000001,"description":"twin"}` {
 		t.Errorf("second body = %s", calls[1].body)
 	}
 }
 
 func TestSpaceContainsReportsFalseAsData(t *testing.T) {
-	// Here the boolean is the answer, not a status: false must not be an error.
 	iot, stub := newSpaceIoT(t, `false`)
-
 	contains, err := iot.SpaceContains(context.Background(), 15, 16)
 	if err != nil {
 		t.Fatalf("SpaceContains: unexpected error: %v", err)
@@ -349,7 +310,6 @@ func TestSpaceContainsReportsFalseAsData(t *testing.T) {
 	if contains {
 		t.Error("SpaceContains = true, want false")
 	}
-
 	calls := stub.calls()
 	if calls[0].path != "/v2.0/cloud/space/relation" {
 		t.Errorf("path = %q", calls[0].path)

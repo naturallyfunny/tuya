@@ -56,8 +56,6 @@ func hmacSign(accessID, accessSecret, accessToken, method, path string, body []b
 	}, nil
 }
 
-// Must NOT read c.token or c.tokenLock: called from fetchToken with the write
-// lock already held, so taking RLock here deadlocks.
 func (c *Client) signTokenRequest(method, path string, body []byte) (*signature, error) {
 	return hmacSign(c.accessID, c.accessSecret, "", method, path, body)
 }
@@ -110,7 +108,6 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	return &tuyaResp, nil
 }
 
-// Caller must already hold c.tokenLock for writing.
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
