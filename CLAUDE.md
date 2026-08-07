@@ -160,7 +160,10 @@ err = hotel.SendCommands(ctx, owner, deviceID, []cloud.DataPoint{{Code: "switch_
 ## Region
 
 Tuya punya endpoint per data-center. `baseURL` di-inject saat `cloud.New()`:
-`https://openapi.tuyaus.com` (US), `.tuyaeu.com` (EU), `.tuyacn.com` (China), `.tuyain.com` (India).
+`https://openapi.tuyaus.com` (Western America), `https://openapi-ueaz.tuyaus.com` (Eastern
+America), `https://openapi.tuyaeu.com` (Central Europe), `https://openapi-weaz.tuyaeu.com`
+(Western Europe), `https://openapi.tuyacn.com` (China), `https://openapi.tuyain.com` (India),
+`https://openapi-sg.iotbing.com` (Singapore — perhatikan domainnya beda sendiri).
 
 ## Migrations
 
@@ -247,15 +250,9 @@ Jangan pernah edit migration yang sudah di-commit.
   Tuya untuknya tidak terdokumentasi. Listing yang diam-diam salah kedalaman adalah bahan baku
   guard yang salah, jadi pemanggil harus menyebut `cloud.DirectChildren` atau `cloud.Subtree`;
   nilai nol `Scope` ditolak. Ini juga alasan `only_sub` selalu dikirim eksplisit.
-- **Query param dikirim dua ejaan sekaligus.** Tabel doc Tuya bilang `only_sub`/`last_row_key`/
-  `page_size`/`space_id`, contoh request di halaman yang sama bilang `onlySub`/`lastRowKey`/
-  `pageSize`/`spaceId`. Keduanya dikirim dengan nilai sama (`setBothCasings`): Tuya mengikat nama
-  yang dia kenal, sisanya diabaikan. Menebak satu lalu salah = parameter jatuh ke default server
-  diam-diam. Buang ejaan yang kalah **setelah** ada bukti dari call sungguhan.
-- **Decoding menerima dua casing untuk tiap nama multi-kata.** Response Tuya campur: pembungkus
-  berhalaman snake_case, objek di dalam `data` camelCase. Hanya nama multi-kata yang bisa beda,
-  jadi hanya itu yang dibaca dua-duanya (`decodeField`). Aturannya sesederhana itu — bukan
-  paranoia menyeluruh.
+- **Query param & response: snake_case, sudah dibuktikan ke API sungguhan** (detail + cara
+  ujinya di "Design Notes"). Jangan percaya contoh request/response di doc Tuya yang camelCase —
+  itu salah, dan salah ejaan tidak menghasilkan error, cuma diam-diam pakai default server.
 - **`result: false` diterjemahkan jadi error (`cloud.ErrNotApplied`) untuk modify & delete.**
   `Do` mengembalikan `result` mentah begitu `success: true`, jadi tanpa ini "terhapus" bisa berarti
   tidak terhapus. Untuk `SpaceContains` boolean-nya justru datanya, jadi `false` dikembalikan apa
@@ -315,23 +312,34 @@ di bawah ini hanya penanda cepat + satu catatan sejarah yang tidak ada di README
   `firestore.Option`; dan `firestore.DefaultCollection` → `DefaultAppAccountCollection`,
   berdampingan dengan `DefaultSpaceCollection`. Pemakaian `postgres.WithAutoMigrate()` /
   `firestore.WithCollection(...)` di call site tidak berubah.
-- **Empat pertanyaan Tuya masih BELUM diuji ke API sungguhan** — project Tuya-nya menjawab
-  `28841107 "data center is suspended"` untuk semua business endpoint saat ini, jadi harness
-  verifikasi tidak bisa jalan. Kodenya ditulis supaya benar di kedua kemungkinan, bukan menebak
-  satu. Yang harus dibuktikan begitu data center hidup lagi:
-  1. Ejaan query param mana yang sebenarnya diikat Tuya (`only_sub` atau `onlySub`, dst) →
-     lalu buang yang kalah dari `setBothCasings`.
-  2. Casing field response yang sebenarnya (`res_id` atau `resId`, dst) → boleh sederhanakan
-     `decodeField` kalau ternyata konsisten.
-  3. Bagaimana listing menandai halaman terakhir → `Page` sekarang mendokumentasikan tiga
-     penanda sekaligus dan `assertDeviceOwned` berhenti pada ketiganya + cap 50 halaman.
-  4. **Yang paling penting:** apakah `GET /v2.0/cloud/space/relation` transitif (menjawab
-     `true` untuk cucu, bukan cuma anak langsung). Kalau ternyata hanya anak langsung,
-     `assertSpaceOwned` menolak space bersarang yang sah — fail-closed, jadi tidak bocor, tapi
-     produk rusak untuk hirarki > 1 level, dan guard-nya harus ganti strategi.
-  Cara menguji: `cloud.Client.Do` bisa dipanggil langsung dengan path apa pun; buat
-  root → anak → cucu lewat `CreateSpace`, lalu bandingkan hasil kedua ejaan param dan
-  `relation(root, cucu)`.
+- **Kontradiksi doc Tuya sudah diuji ke API sungguhan (DC Singapore, 7 Agustus 2026).** Hasilnya,
+  dan ini yang dipakai kode sekarang:
+  1. **Query param = snake_case.** `page_size=3` mengembalikan 3 baris; `pageSize=3` **diabaikan
+     diam-diam** dan server pakai default (`page_size: 200`). Tabel doc benar, contoh request di
+     doc salah. Ini persis alasan tidak boleh menebak: salah ejaan tidak error, cuma diam.
+  2. **Response = snake_case** (`res_id`, `res_type`, `last_row_key`, `page_size`, `id`,
+     `root_id`). Contoh camelCase di doc salah. Struct tag biasa sudah cukup.
+  3. **Space ID datang sebagai number**, bukan string — `"1500****"` di doc kemungkinan artefak
+     masking. `SpaceID` tetap menerima keduanya (murah, satu method) tapi sekarang jelas mana
+     yang normal.
+  4. **Halaman terakhir = `data: []` dan field `last_row_key` hilang sama sekali** (jadi
+     ter-decode 0). `assertDeviceOwned` berhenti di situ, plus cursor macet, plus cap.
+  5. **`relation` transitif** — `relation(root, cucu) = true`. Guard `assertSpaceOwned` sah.
+- **Dua sifat `relation` yang tidak ada di doc dan mengubah kode.** `relation(X, X)` menjawab
+  **false**: sebuah space bukan turunan dirinya sendiri. Jadi short-circuit `target == root` di
+  `assertSpaceOwned` bukan optimisasi, tapi syarat kebenaran — tanpa itu tenant ditolak masuk ke
+  root-nya sendiri. Dan space yang bukan milik project **tidak** dijawab `false` melainkan error
+  `40001900 "No space permission"`; pintu menerjemahkannya jadi `ErrSpaceNotOwned` (lewat
+  `cloud.APIError` + `cloud.CodeNoSpacePermission`) supaya janji `errors.Is(err,
+  ErrSpaceNotOwned)` tetap berlaku untuk semua space yang tidak boleh disentuh.
+- **Query param wajib urut ASCII, kalau tidak `1004 sign invalid`.** Tuya mengurutkan query
+  sebelum memverifikasi signature. `?space_id=..&only_sub=..&page_size=..` gagal; params yang
+  sama dalam urutan terurut berhasil. Semua query di `cloud` dibangun lewat `url.Values.Encode()`
+  yang mengurutkan sendiri — jangan pernah merakit query string dengan tangan untuk `Do`.
+- **Data center Singapore beda domain: `https://openapi-sg.iotbing.com`**, bukan pola
+  `openapi.tuya*.com`. Salah data center tetap bisa terbitkan token, lalu semua endpoint isi
+  ditolak `28841107 "data center is suspended"` — gejalanya mirip kredensial mati padahal
+  base URL-nya yang salah.
 
 ## Conventions
 

@@ -15,10 +15,10 @@ import (
 // success:true alone does not mean the operation took effect.
 var ErrNotApplied = errors.New("tuya: operation was not applied")
 
-// SpaceID is a Tuya space identifier. Tuya is inconsistent about its JSON type —
-// space creation answers with a number, space lookup with a string — so this
-// accepts either and always renders as a number. It is a Long: never route one
-// through any or float64, which lose precision above 2^53.
+// SpaceID is a Tuya space identifier. Live responses carry it as a JSON number,
+// but Tuya's reference shows it quoted, so this accepts either and always
+// renders as a number. It is a Long: never route one through any or float64,
+// which lose precision above 2^53.
 type SpaceID int64
 
 func (s SpaceID) String() string { return strconv.FormatInt(int64(s), 10) }
@@ -39,11 +39,12 @@ func (s *SpaceID) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Space is a node of the tenancy tree. A root space carries no parent_id.
 type Space struct {
-	ID       SpaceID
-	Name     string
-	ParentID SpaceID
-	RootID   SpaceID
+	ID       SpaceID `json:"id"`
+	Name     string  `json:"name"`
+	ParentID SpaceID `json:"parent_id"`
+	RootID   SpaceID `json:"root_id"`
 }
 
 type ResourceType int
@@ -51,25 +52,23 @@ type ResourceType int
 const ResourceDevice ResourceType = 0
 
 type Resource struct {
-	ID   string
-	Type ResourceType
+	ID   string       `json:"res_id"`
+	Type ResourceType `json:"res_type"`
 }
 
-// Page is one page of a listing. Tuya does not document how to detect the last
-// page: its reference example shows last_row_key 0 for a page that fits in one
-// response, and never says whether an exhausted cursor comes back as 0, as the
-// key it was given, or alongside an empty data slice. A caller that pages to the
-// end must therefore stop on all three — an empty slice, a zero LastRowKey, or a
-// LastRowKey equal to the one it just sent — or risk looping forever.
+// Page is one page of a listing. The last page arrives as an empty data slice
+// with no cursor at all, so a LastRowKey of zero means the walk is over. A
+// cursor that repeats the one just sent means the same thing; a caller paging
+// to the end should stop on either rather than trust one signal.
 type Page struct {
-	LastRowKey int64
-	PageSize   int
+	LastRowKey int64 `json:"last_row_key"`
+	PageSize   int   `json:"page_size"`
 }
 
 // Scope selects how deep a listing reaches. It is a required argument rather
-// than an option because Tuya's default for only_sub is undocumented, and a
-// listing that silently covers the wrong depth is exactly what a caller
-// building an ownership check must not get.
+// than an option because Tuya documents no default for only_sub, and a listing
+// that silently covers the wrong depth is exactly what a caller building an
+// ownership check must not get.
 type Scope int
 
 const (
@@ -95,20 +94,11 @@ func WithPageSize(size int) PageOption {
 	return func(q *pageQuery) { q.pageSize = &size }
 }
 
-// Tuya's reference tables and its own example requests disagree on how these
-// query parameters are spelled — the tables say only_sub, last_row_key,
-// page_size and space_id, the examples say onlySub, lastRowKey, pageSize and
-// spaceId. Both spellings are sent with the same value: Tuya binds whichever
-// name it knows and ignores the other. Sending one spelling and guessing wrong
-// would leave the parameter silently at a server-side default, which for
-// only_sub means querying a different depth than the caller asked for. Drop the
-// losing spelling once a live call proves which one Tuya reads.
-// /v2.0/cloud/space/relation is unaffected: its table and example agree.
-func setBothCasings(query url.Values, snake, camel, value string) {
-	query.Set(snake, value)
-	query.Set(camel, value)
-}
-
+// Tuya's example requests spell these parameters onlySub, lastRowKey, pageSize
+// and spaceId, but the live API binds only the snake_case names its reference
+// tables list — a camelCase page_size is ignored and the server default applies
+// silently. Encode also matters: Tuya sorts query parameters before checking
+// the signature, so url.Values keeps them in the one order it accepts.
 func listQuery(scope Scope, opts []PageOption) (url.Values, error) {
 	var onlySub string
 	switch scope {
@@ -124,83 +114,30 @@ func listQuery(scope Scope, opts []PageOption) (url.Values, error) {
 		opt(&page)
 	}
 	query := url.Values{}
-	setBothCasings(query, "only_sub", "onlySub", onlySub)
+	query.Set("only_sub", onlySub)
 	if page.lastRowKey != nil {
-		setBothCasings(query, "last_row_key", "lastRowKey", strconv.FormatInt(*page.lastRowKey, 10))
+		query.Set("last_row_key", strconv.FormatInt(*page.lastRowKey, 10))
 	}
 	if page.pageSize != nil {
-		setBothCasings(query, "page_size", "pageSize", strconv.Itoa(*page.pageSize))
+		query.Set("page_size", strconv.Itoa(*page.pageSize))
 	}
 	return query, nil
 }
 
-// Tuya answers the space API in two casings: the paged wrapper is snake_case
-// while the objects inside data are camelCase, and its reference tables spell
-// both the other way round. Only multi-word names can differ, and those are read
-// under either spelling so a rename cannot silently blank a field.
-func decodeField(fields map[string]json.RawMessage, target any, names ...string) error {
-	for _, name := range names {
-		raw, ok := fields[name]
-		if !ok {
-			continue
-		}
-		if err := json.Unmarshal(raw, target); err != nil {
-			return fmt.Errorf("failed to decode %s: %w", name, err)
-		}
-		return nil
-	}
-	return nil
-}
-
-func objectFields(data []byte) (map[string]json.RawMessage, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	return fields, nil
-}
-
-func (s *Space) UnmarshalJSON(data []byte) error {
-	fields, err := objectFields(data)
-	if err != nil {
-		return fmt.Errorf("failed to decode space: %w", err)
-	}
-	return errors.Join(
-		decodeField(fields, &s.ID, "id"),
-		decodeField(fields, &s.Name, "name"),
-		decodeField(fields, &s.ParentID, "parent_id", "parentId"),
-		decodeField(fields, &s.RootID, "root_id", "rootId"),
-	)
-}
-
-func (r *Resource) UnmarshalJSON(data []byte) error {
-	fields, err := objectFields(data)
-	if err != nil {
-		return fmt.Errorf("failed to decode resource: %w", err)
-	}
-	return errors.Join(
-		decodeField(fields, &r.ID, "res_id", "resId"),
-		decodeField(fields, &r.Type, "res_type", "resType"),
-	)
-}
-
+// A listing arrives as its rows plus the cursor fields beside them; the last
+// one carries no cursor at all, which is what leaves Page zeroed.
 func decodePage(raw json.RawMessage, data any) (Page, error) {
 	if len(raw) == 0 {
 		return Page{}, nil
 	}
-	fields, err := objectFields(raw)
-	if err != nil {
+	body := struct {
+		Data any `json:"data"`
+		Page
+	}{Data: data}
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return Page{}, err
 	}
-	var page Page
-	if err := errors.Join(
-		decodeField(fields, data, "data"),
-		decodeField(fields, &page.LastRowKey, "last_row_key", "lastRowKey"),
-		decodeField(fields, &page.PageSize, "page_size", "pageSize"),
-	); err != nil {
-		return Page{}, err
-	}
-	return page, nil
+	return body.Page, nil
 }
 
 // Tuya answers modify and delete with a bare boolean, and Do hands back that
@@ -312,7 +249,7 @@ func (c *IoT) ChildSpaces(ctx context.Context, id SpaceID, scope Scope, opts ...
 	if err != nil {
 		return nil, Page{}, err
 	}
-	setBothCasings(query, "space_id", "spaceId", id.String())
+	query.Set("space_id", id.String())
 	return c.childSpaces(ctx, query)
 }
 
@@ -339,10 +276,10 @@ func (c *IoT) childSpaces(ctx context.Context, query url.Values) ([]SpaceID, Pag
 	return ids, page, nil
 }
 
-// SpaceContains reports whether child sits under parent. Tuya does not document
-// whether it answers for descendants at any depth or only for direct children;
-// a guard built on it is therefore fail-closed either way, but nested spaces
-// need the transitive reading to work. Verify before relying on depth.
+// SpaceContains reports whether child sits under parent, at any depth — Tuya
+// answers true for a grandchild. Two edges it does not document: a space
+// compared against itself answers false, and a space outside the project is
+// refused as CodeNoSpacePermission rather than answered false.
 func (c *IoT) SpaceContains(ctx context.Context, parent, child SpaceID) (bool, error) {
 	query := url.Values{}
 	query.Set("parent_id", parent.String())

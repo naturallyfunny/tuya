@@ -63,6 +63,27 @@ type response struct {
 	Msg     string          `json:"msg,omitempty"`
 }
 
+// CodeNoSpacePermission is what Tuya answers when a space is not the project's
+// at all. Note it is an error, not a false: /space/relation reports false only
+// for two spaces the project can see.
+const CodeNoSpacePermission = 40001900
+
+// APIError is a refusal from Tuya itself: the request arrived and the envelope
+// came back with success:false. The code is worth keeping typed because callers
+// act on particular ones.
+type APIError struct {
+	Code int
+	Msg  string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("tuya api error %d: %s", e.Code, e.Msg)
+}
+
+// Do signs a request and returns Tuya's raw result. Query parameters in path
+// must be in ASCII order: Tuya sorts them before verifying the signature, so an
+// unsorted query is rejected as code 1004, "sign invalid" — url.Values.Encode
+// orders them for you. A refusal from Tuya arrives as *APIError.
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
 	const maxIoTRequestAttempts = 2
 	for attempt := range maxIoTRequestAttempts {
@@ -106,7 +127,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 			}
 			continue
 		}
-		return nil, fmt.Errorf("tuya api error %d: %s", tuyaResp.Code, tuyaResp.Msg)
+		return nil, &APIError{Code: tuyaResp.Code, Msg: tuyaResp.Msg}
 	}
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
 }

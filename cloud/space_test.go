@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -21,10 +22,11 @@ type spaceStub struct {
 }
 
 type recordedRequest struct {
-	method string
-	path   string
-	query  url.Values
-	body   string
+	method   string
+	path     string
+	query    url.Values
+	rawQuery string
+	body     string
 }
 
 func (s *spaceStub) handler(w http.ResponseWriter, r *http.Request) {
@@ -37,10 +39,11 @@ func (s *spaceStub) handler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.requests = append(s.requests, recordedRequest{
-		method: r.Method,
-		path:   r.URL.Path,
-		query:  r.URL.Query(),
-		body:   string(body),
+		method:   r.Method,
+		path:     r.URL.Path,
+		query:    r.URL.Query(),
+		rawQuery: r.URL.RawQuery,
+		body:     string(body),
 	})
 	s.mu.Unlock()
 
@@ -67,7 +70,7 @@ func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
 }
 
 func TestSpaceIDAcceptsNumberAndString(t *testing.T) {
-	// Tuya answers creation with a number and lookup with a string.
+	// Live answers are numbers; Tuya's reference quotes them. Decode both.
 	for _, raw := range []string{`{"id":150000001,"parent_id":"150000002"}`, `{"id":"150000001","parent_id":150000002}`} {
 		iot, _ := newSpaceIoT(t, raw)
 		space, err := iot.Space(context.Background(), 1)
@@ -93,50 +96,52 @@ func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 	}
 }
 
-func TestSpaceDecodesEitherFieldCasing(t *testing.T) {
-	cases := map[string]string{
-		"snake": `{"id":"1","name":"Lobby","parent_id":"2","root_id":"3"}`,
-		"camel": `{"id":"1","name":"Lobby","parentId":"2","rootId":"3"}`,
+func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
+	iot, _ := newSpaceIoT(t, `{"id":1,"name":"Lobby","parent_id":2,"root_id":3}`)
+
+	space, err := iot.Space(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("Space: unexpected error: %v", err)
 	}
-	for name, raw := range cases {
-		t.Run(name, func(t *testing.T) {
-			iot, _ := newSpaceIoT(t, raw)
-			space, err := iot.Space(context.Background(), 1)
-			if err != nil {
-				t.Fatalf("Space: unexpected error: %v", err)
-			}
-			want := Space{ID: 1, Name: "Lobby", ParentID: 2, RootID: 3}
-			if space != want {
-				t.Errorf("Space = %+v, want %+v", space, want)
-			}
-		})
+	want := Space{ID: 1, Name: "Lobby", ParentID: 2, RootID: 3}
+	if space != want {
+		t.Errorf("Space = %+v, want %+v", space, want)
 	}
 }
 
-func TestSpaceResourcesDecodesEitherFieldCasing(t *testing.T) {
-	cases := map[string]string{
-		"camel data, snake wrapper": `{"last_row_key":7,"data":[{"resType":0,"resId":"vdevo-1"}],"page_size":200}`,
-		"snake data, camel wrapper": `{"lastRowKey":7,"data":[{"res_type":0,"res_id":"vdevo-1"}],"pageSize":200}`,
+func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
+	iot, _ := newSpaceIoT(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
+
+	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
+	if err != nil {
+		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
-	for name, raw := range cases {
-		t.Run(name, func(t *testing.T) {
-			iot, _ := newSpaceIoT(t, raw)
-			resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
-			if err != nil {
-				t.Fatalf("SpaceResources: unexpected error: %v", err)
-			}
-			if len(resources) != 1 || resources[0].ID != "vdevo-1" || resources[0].Type != ResourceDevice {
-				t.Errorf("resources = %+v, want one device vdevo-1", resources)
-			}
-			if page.LastRowKey != 7 || page.PageSize != 200 {
-				t.Errorf("page = %+v, want cursor 7 and size 200", page)
-			}
-		})
+	if len(resources) != 1 || resources[0].ID != "vdevo-1" || resources[0].Type != ResourceDevice {
+		t.Errorf("resources = %+v, want one device vdevo-1", resources)
+	}
+	if page.LastRowKey != 2036356138623278 || page.PageSize != 3 {
+		t.Errorf("page = %+v, want cursor 2036356138623278 and size 3", page)
 	}
 }
 
-func TestListingSendsBothParameterSpellings(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[],"last_row_key":0,"page_size":200}`)
+func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
+	// Exactly what Tuya answers past the end: rows gone, no last_row_key at all.
+	iot, _ := newSpaceIoT(t, `{"data":[],"page_size":3}`)
+
+	resources, page, err := iot.SpaceResources(context.Background(), 15, Subtree)
+	if err != nil {
+		t.Fatalf("SpaceResources: unexpected error: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Errorf("resources = %+v, want none", resources)
+	}
+	if page.LastRowKey != 0 {
+		t.Errorf("cursor = %d, want 0 so a walk can stop", page.LastRowKey)
+	}
+}
+
+func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
+	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
 
 	if _, _, err := iot.SpaceResources(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
@@ -146,23 +151,35 @@ func TestListingSendsBothParameterSpellings(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
-	// Tuya's reference tables and examples disagree on the spelling; whichever
-	// one it binds must carry the value the caller asked for.
-	for _, pair := range [][2]string{
-		{"only_sub", "onlySub"},
-		{"page_size", "pageSize"},
-		{"last_row_key", "lastRowKey"},
-	} {
-		snake, camel := calls[0].query.Get(pair[0]), calls[0].query.Get(pair[1])
-		if snake == "" || camel == "" || snake != camel {
-			t.Errorf("query has %s=%q and %s=%q; want both spellings with one value", pair[0], snake, pair[1], camel)
+	// Only snake_case is bound; a camelCase name is ignored and the server
+	// default applies in silence.
+	for name, want := range map[string]string{"only_sub": "false", "page_size": "100", "last_row_key": "5"} {
+		if got := calls[0].query.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
-	if got := calls[0].query.Get("only_sub"); got != "false" {
-		t.Errorf("only_sub = %q, want false for Subtree", got)
+	for _, ignored := range []string{"onlySub", "pageSize", "lastRowKey"} {
+		if calls[0].query.Has(ignored) {
+			t.Errorf("sent %s, which Tuya ignores", ignored)
+		}
 	}
 	if got := calls[0].path; got != "/v2.0/cloud/space/15/resource" {
 		t.Errorf("path = %q", got)
+	}
+}
+
+func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
+	// Tuya sorts the query before checking the signature; an unsorted one is
+	// rejected as code 1004, and the failure looks nothing like its cause.
+	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
+
+	if _, _, err := iot.ChildSpaces(context.Background(), 15, Subtree, WithPageSize(100), WithLastRowKey(5)); err != nil {
+		t.Fatalf("ChildSpaces: unexpected error: %v", err)
+	}
+
+	raw := stub.calls()[0].rawQuery
+	if !sort.StringsAreSorted(strings.Split(raw, "&")) {
+		t.Errorf("query %q is not in ASCII order", raw)
 	}
 }
 
@@ -177,10 +194,8 @@ func TestDirectChildrenNarrowsTheListing(t *testing.T) {
 	if got := calls[0].query.Get("only_sub"); got != "true" {
 		t.Errorf("only_sub = %q, want true for DirectChildren", got)
 	}
-	for _, spelling := range []string{"space_id", "spaceId"} {
-		if got := calls[0].query.Get(spelling); got != "15" {
-			t.Errorf("%s = %q, want 15", spelling, got)
-		}
+	if got := calls[0].query.Get("space_id"); got != "15" {
+		t.Errorf("space_id = %q, want 15", got)
 	}
 }
 

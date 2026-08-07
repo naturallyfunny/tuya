@@ -325,6 +325,20 @@ func TestTheTenantRootCannotBeDeletedThroughTheDoor(t *testing.T) {
 	}
 }
 
+func TestASpaceOutsideTheProjectIsRefusedAsUnowned(t *testing.T) {
+	// Tuya does not answer false for a space it cannot see — it refuses the
+	// question. For this door that means the same thing.
+	iot := &fakeSpaceIoT{containsErr: &cloud.APIError{Code: cloud.CodeNoSpacePermission, Msg: "No space permission"}}
+	door := newSpaceDoor(t, iot)
+
+	if _, err := door.Space(context.Background(), "owner-1", foreign); !errors.Is(err, tuya.ErrSpaceNotOwned) {
+		t.Errorf("Space error = %v, want ErrSpaceNotOwned", err)
+	}
+	if iot.queried != 0 {
+		t.Errorf("queried space %d past the guard", iot.queried)
+	}
+}
+
 func TestSpaceDoorReportsAFailedOwnershipCheck(t *testing.T) {
 	iot := &fakeSpaceIoT{containsErr: errors.New("tuya unreachable")}
 	door := newSpaceDoor(t, iot)

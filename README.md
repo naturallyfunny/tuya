@@ -178,12 +178,19 @@ and transport.
 
 `baseURL` selects the Tuya data-center endpoint:
 
-| Region | `baseURL`                     |
-| ------ | ----------------------------- |
-| US     | `https://openapi.tuyaus.com`  |
-| EU     | `https://openapi.tuyaeu.com`  |
-| China  | `https://openapi.tuyacn.com`  |
-| India  | `https://openapi.tuyain.com`  |
+| Region           | `baseURL`                          |
+| ---------------- | ---------------------------------- |
+| Western America  | `https://openapi.tuyaus.com`       |
+| Eastern America  | `https://openapi-ueaz.tuyaus.com`  |
+| Central Europe   | `https://openapi.tuyaeu.com`       |
+| Western Europe   | `https://openapi-weaz.tuyaeu.com`  |
+| China            | `https://openapi.tuyacn.com`       |
+| India            | `https://openapi.tuyain.com`       |
+| Singapore        | `https://openapi-sg.iotbing.com`   |
+
+Singapore sits on a different domain entirely — `iotbing.com`, not `tuya*.com`. Pointing at the
+wrong data center still mints a token, then refuses every business call, so a credential that
+"works" but answers `28841107` usually means the base URL, not the credential.
 
 ## Usage
 
@@ -346,9 +353,14 @@ Each one is a domain or usage constraint, not an oversight.
 
 - **The spatial door carries two guards, because Tuya prices them very differently.**
   Guarding a *space* costs one request: `GET /v2.0/cloud/space/relation` answers whether a space
-  sits inside the tenant's root, and containment is transitive — which also settles deletes,
-  since everything under a space you own is yours too. Guarding a *device* gets no such
-  shortcut. Tuya has no "which space holds this device" lookup at all: `GET
+  sits inside the tenant's root, and containment is transitive — confirmed against the live API,
+  where a root answers `true` for its grandchild. That also settles deletes, since everything
+  under a space you own is yours too. Two edges of that endpoint shape the guard: a space
+  compared against *itself* answers `false`, so the door grants the tenant its own root without
+  asking (an optimization that is also a correctness fix), and a space the project cannot see at
+  all is refused outright with code `40001900` rather than answered `false` — which the door
+  translates to `ErrSpaceNotOwned`, because for a tenant it means the same thing. Guarding a
+  *device* gets no such shortcut. Tuya has no "which space holds this device" lookup at all: `GET
   /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset ID.
   The only route is to walk the subtree's resources and look for the ID, paginated, before every
   guarded call.
@@ -369,22 +381,23 @@ Each one is a domain or usage constraint, not an oversight.
   `DirectChildren` or `Subtree`. The parameter is then always sent explicitly, and Tuya's
   default never enters the picture.
 
-- **Every contested query parameter is sent under both spellings.**
+- **Query parameters are snake_case, and the query string is always ASCII-sorted.**
   Tuya's reference tables say `only_sub`, `last_row_key`, `page_size`, `space_id`; its example
-  requests *on the same pages* say `onlySub`, `lastRowKey`, `pageSize`, `spaceId`. The doc
-  contradicts itself, and picking one and being wrong doesn't fail loudly — the parameter is
-  ignored and the server's default silently applies, which for `only_sub` means querying a
-  different depth than you asked for. Both spellings carry the same value, so Tuya binds
-  whichever name it knows and drops the other. It is a stopgap with a clear exit: one live call
-  settles it, and the losing spelling comes out. Responses get the same treatment in reverse —
-  every multi-word field is read under either casing, because Tuya's paged wrapper is snake_case
-  while the objects inside `data` are camelCase.
+  requests *on the same pages* say `onlySub`, `lastRowKey`, `pageSize`, `spaceId`. Probing the
+  live API settled it: the tables are right and the examples are wrong. The failure mode was the
+  reason to check rather than guess — a camelCase `pageSize=3` is not rejected, it is *ignored*,
+  and the server's default quietly applies (`page_size: 200`). For `only_sub` that would mean
+  querying a different depth than you asked for, under an ownership check.
+
+  Sorting is a separate trap with the same shape. Tuya orders query parameters before it
+  verifies the signature, so an unsorted query fails as code `1004`, "sign invalid" — an error
+  that points nowhere near its cause. `url.Values.Encode` sorts, which is why every query here
+  is built through it, and a test asserts the ordering survives.
 
 - **`cloud.SpaceID` is a named `int64` that accepts a JSON number *or* a string.**
-  Tuya answers space creation with `150000001` and space lookup with `"1500****"` — two JSON
-  types for one identifier, in one document. A named type absorbs that in one place instead of
-  at every call site. It is also a `Long`: decoding through `any` or `float64` would corrupt IDs
-  above 2^53 silently, and a test pins that it doesn't.
+  The live API answers with numbers, but Tuya's reference shows space IDs quoted (`"1500****"`),
+  so both decode. It is a `Long`: routing one through `any` or `float64` would corrupt IDs above
+  2^53 in silence, and a test pins that it doesn't.
 
 - **`result: false` is an error for modify and delete, and data for `SpaceContains`.**
   `Do` hands back the raw result as soon as Tuya says `success: true`, so a delete that answers
@@ -395,13 +408,12 @@ Each one is a domain or usage constraint, not an oversight.
   the boolean *is* the answer.
 
 - **Paging is never looped inside `cloud`, and the one loop in the library is bounded.**
-  Tuya documents how to fetch the next page but never how to know there isn't one: its example
-  shows `last_row_key: 0` for a listing that fits in a single response, and says nothing about
-  whether an exhausted cursor comes back as zero, unchanged, or beside an empty `data`. A loop
-  written from a guess is an infinite loop that burns quota. So `cloud` returns one page and the
-  cursor, and the caller composes. The device guard, which has no choice but to walk, treats all
-  three signals as the end and caps how many pages it will read — an undocumented answer costs a
-  refusal, never a hang.
+  Tuya documents how to fetch the next page but never how to know there isn't one, and a loop
+  written from a guess is an infinite loop that burns quota. Live, the last page arrives as an
+  empty `data` with the cursor field absent altogether. `cloud` hands you that page and the
+  cursor and lets you compose; the device guard, which has no choice but to walk, stops on the
+  documented signal *and* on a cursor that stopped moving, with a cap on pages read. The extra
+  stops cost one comparison and turn any future surprise into a refusal rather than a hang.
 
 - **`RootSpaces` exists in `cloud`, and deliberately not in `SpaceIoT`.**
   `GET /v2.0/cloud/space/child` without a `space_id` returns the root spaces of the whole cloud
@@ -479,19 +491,21 @@ owner — is unit-tested against fake `IoT`, `SpaceIoT` and store implementation
 short-circuit guards (a command must never reach an unowned device), and the cost guard (an
 ownership check must never trigger channel-name requests). For the spatial door it also pins
 that a zero space ID resolves to the tenant's own root without asking Tuya, that the tenant root
-cannot be deleted through the door, and that the paginated device walk terminates on a stalled
-cursor *and* on a cursor that keeps advancing forever. That suite covers **88.2%** of the
-package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
+cannot be deleted through the door, that a space the project cannot see is refused as unowned
+rather than surfacing a raw API error, and that the paginated device walk terminates on a
+stalled cursor *and* on a cursor that keeps advancing forever. That suite covers **88.4%** of
+the package's statements. The Firestore `validateOwner` rules are table-tested (100% of that
 function).
 
-`cloud` is tested against an `httptest` server (**72.0%** of the package) — real HTTP round trips
+`cloud` is tested against an `httptest` server (**71.4%** of the package) — real HTTP round trips
 over a real socket, not mocks. Two behaviours are worth pinning because they are invisible from
 the outside. The token retry: the stub answers code `1010` and the test asserts the retry
 carried a *different* access token, since a retry that silently replays the rejected token looks
 identical to one that works until a credential is rotated in production. And the space layer's
-tolerance for Tuya's inconsistent JSON: IDs arriving as numbers or strings, fields arriving in
-either casing, a `Long` beyond 2^53 surviving intact, `result:false` becoming an error, and both
-spellings of every contested query parameter going out with the same value.
+wire contract, each case taken from a live response: the field names Tuya really sends, a last
+page arriving with no cursor at all, an ID surviving beyond 2^53, `result:false` becoming an
+error, only the parameter spellings Tuya binds going out — and the query string staying
+ASCII-sorted, which nothing but a `1004` would otherwise tell you about.
 
 The rest is integration-shaped by nature: signing against Tuya's live service, and the
 `postgres` / `firestore` stores talking to a real database or the Firestore emulator. Faking a
@@ -555,15 +569,9 @@ stores. Remaining work is additive:
 - [x] Unit tests on both ownership boundaries and Firestore owner validation.
 - [x] `SpaceClient` + `SpaceStore` — the door for Tuya's spatial tenancy model, alongside
       `AppAccountClient` / `AppAccountStore`, over `cloud/space.go`.
-- [ ] **Confirm four points against the live API.** The space layer is written from Tuya's
-      reference docs and is deliberately correct under *both* readings wherever those docs
-      contradict themselves, but none of it has been exercised against a live data center yet.
-      What a first live run should settle: which spelling of the paged query parameters Tuya
-      actually binds; whether responses really mix casing; how a listing signals its last page;
-      and — the one that matters most — whether `/v2.0/cloud/space/relation` answers `true` for
-      a *descendant* or only a direct child. If it turns out to be direct-only, the space guard
-      refuses legitimate nested spaces: fail-closed, so nothing leaks, but hierarchies deeper
-      than one level would need a different guard.
+- [x] Settle Tuya's self-contradicting reference against the live API: parameter spelling,
+      response casing, space-ID JSON type, end-of-listing signal, and whether `/space/relation`
+      is transitive. It is — see [Design rationale](#design-rationale).
 - [ ] Integration tests for `cloud` / `postgres` / `firestore` behind a build tag and live infra.
 - [ ] Further Tuya domains beyond device and space control (`cloud/home.go`), added as new files
       on `cloud.IoT`.

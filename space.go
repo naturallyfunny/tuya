@@ -187,12 +187,21 @@ func (c *SpaceClient) resolve(ctx context.Context, owner string, id cloud.SpaceI
 
 // assertSpaceOwned costs one request: containment is transitive, so a space
 // that sits under the tenant's root has its whole subtree under it too.
+//
+// The root is granted without asking, and not only to save the request: Tuya
+// answers false when a space is compared against itself, so asking would refuse
+// the tenant its own root. A space the project cannot see at all is a refusal
+// rather than a false, and means the same thing here.
 func (c *SpaceClient) assertSpaceOwned(ctx context.Context, root, target cloud.SpaceID) error {
 	if target == root {
 		return nil
 	}
 	contains, err := c.iot.SpaceContains(ctx, root, target)
 	if err != nil {
+		var apiErr *cloud.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == cloud.CodeNoSpacePermission {
+			return ErrSpaceNotOwned
+		}
 		return fmt.Errorf("verify space ownership: %w", err)
 	}
 	if !contains {
@@ -211,10 +220,10 @@ const (
 // walking the resources of the whole subtree. It runs before every guarded
 // device call and stops at the first match, so the usual cost is one request.
 //
-// Tuya documents no end-of-listing signal, so the walk treats each plausible
-// one as the end — no rows, a zero cursor, a cursor that did not move — and
-// caps the pages it will read. An undocumented answer therefore costs a
-// refusal, never an endless loop.
+// The walk ends where Tuya ends it — an empty page with no cursor — and also on
+// a cursor that stopped moving, with a cap on how many pages it will read. Only
+// the first of those is Tuya's documented behaviour; the other two keep a
+// surprise costing a refusal rather than an endless loop.
 func (c *SpaceClient) assertDeviceOwned(ctx context.Context, root cloud.SpaceID, deviceID string) error {
 	var cursor int64
 	for range deviceGuardMaxPages {
