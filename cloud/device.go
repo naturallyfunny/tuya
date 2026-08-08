@@ -20,19 +20,42 @@ type DataPoint struct {
 	Value any    `json:"value"`
 }
 
-type Device struct {
-	ID       string      `json:"id"`
-	Category string      `json:"category"`
-	Name     string      `json:"name"`
-	Status   []DataPoint `json:"status"`
+type UserDevice struct {
+	ID   string `json:"id"`
+	UUID string `json:"uuid"`
+	// NodeID is sent for sub-devices only.
+	NodeID string `json:"node_id"`
+	// Name here is what the user renamed the device to; SpaceDevice.Name is the factory name
+	// and puts the rename in CustomName instead.
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	ProductID   string `json:"product_id"`
+	ProductName string `json:"product_name"`
+	Model       string `json:"model"`
+	UID         string `json:"uid"`
+	// OwnerID is a space ID, not a Tuya UID.
+	OwnerID    string      `json:"owner_id"`
+	LocalKey   string      `json:"local_key"`
+	Icon       string      `json:"icon"`
+	IP         string      `json:"ip"`
+	Lat        string      `json:"lat"`
+	Lon        string      `json:"lon"`
+	TimeZone   string      `json:"time_zone"`
+	BizType    int         `json:"biz_type"`
+	Sub        bool        `json:"sub"`
+	Online     bool        `json:"online"`
+	Status     []DataPoint `json:"status"`
+	ActiveTime int64       `json:"active_time"`
+	CreateTime int64       `json:"create_time"`
+	UpdateTime int64       `json:"update_time"`
 }
 
-func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
 	}
-	var devices []Device
+	var devices []UserDevice
 	if err := json.Unmarshal(raw, &devices); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal device list: %w", err)
 	}
@@ -40,8 +63,10 @@ func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]Device, error)
 }
 
 type SpaceDevice struct {
-	ID          string `json:"id"`
-	UUID        string `json:"uuid"`
+	ID   string `json:"id"`
+	UUID string `json:"uuid"`
+	// Name here is the factory name; the user's rename is CustomName. UserDevice.Name is the
+	// other way round.
 	Name        string `json:"name"`
 	CustomName  string `json:"customName"`
 	Category    string `json:"category"`

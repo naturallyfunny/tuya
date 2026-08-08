@@ -71,14 +71,13 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
 
 ## Design Decisions — yang mudah "dibersihkan" lalu rusak diam-diam
 
-- **Dua jalur refresh token, jangan disatukan.** `ensureValidToken` (lazy) percaya expiry cache;
-  `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya — Tuya otoritas atas token yang
-  dia terbitkan. Menyatukannya mematikan retry: jalur reaktif return nil tanpa berbuat apa pun, lalu
-  request diulang dengan token yang barusan ditolak. Dijaga `cloud/client_test.go`.
-- **`cloud.IoT` = satu method satu endpoint; `cloud.Device` = cuma field yang wire-nya kirim.**
-  Yang tak bisa ditunjuk ke satu endpoint sedang menyusun perilaku — itu milik pemanggil: `HasX`,
-  "list sekalian di-enrich", atau slot kosong buat hasil layer atas (dulu `CodeNameMapping`, kini
-  `tuya.Device.Channels`) = dibangun di root. `Client` dikecualikan: refresh/retry = kebenaran protokol.
+- **Dua jalur refresh token, jangan disatukan** (dijaga `cloud/client_test.go`). `ensureValidToken`
+  (lazy) percaya expiry cache; `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya —
+  Tuya otoritas atas tokennya. Disatukan = retry mati: reaktif return nil, token ditolak dipakai ulang.
+- **`cloud.IoT` = satu method satu endpoint; nama tipe hasil = nama method-nya, isinya cuma field
+  yang wire-nya kirim.** Yang tak bisa ditunjuk ke satu endpoint sedang menyusun perilaku — itu milik
+  pemanggil: `HasX`, "list di-enrich", slot hasil layer atas (`tuya.Device.Channels`) = di root. Tak
+  ada `cloud.Device` polos (Fakta 3). `Client` dikecualikan: refresh/retry = kebenaran protokol.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan.** Library tidak pernah tahu owner itu
   "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
   identifier, tabel, atau kolom.
@@ -95,8 +94,8 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   yang pernah terlihat di response — nilai lain (group/asset/scene) beredar di doc & jawaban LLM tapi
   **belum diverifikasi**; `res_type` tak dikenal toh ter-decode aman.
 - **`HasDevice` = list-then-contains di root.** Satu request, flat berapa pun jumlah device. Tidak
-  di-cache: invalidasi butuh tahu kapan device ditambah/dicabut/di-relink dan Tuya tidak mengabari satu
-  pun. Sengaja tidak memanggil `DeviceChannelNames` — butuh identitas, bukan label.
+  di-cache: invalidasi butuh tahu kapan device ditambah/dicabut/di-relink, Tuya tidak mengabari satu
+  pun. Sengaja tidak minta `DeviceChannelNames` — butuh identitas, bukan label.
 - **Biaya `ContainsDevice` disebut angkanya.** Berhenti di match pertama; batas atas
   `deviceScanPageSize` × `deviceScanMaxPages` = 200 × 50 resource. Biayanya **tumbuh seiring subtree**,
   beda kelas dari `HasDevice`. Menyerah karena kena cap = **error**, bukan `false`.
@@ -122,17 +121,17 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
 
 ## Fakta API — doc Tuya kontradiktif, ini hasil uji sungguhan (DC Singapore, 7–8 Agustus 2026)
 
-1. **Query param selalu snake_case; casing response beda per endpoint — jangan diseragamkan.**
-   `page_size=3` jalan, `pageSize=3` **diabaikan diam-diam** (default 200) tanpa error. Device detail
-   & `cloud/space/*` snake_case (contoh di doc salah); `cloud/thing/space/device` **camelCase**.
+1. **Query param selalu snake_case; casing response beda per endpoint.** `pageSize=3` **diabaikan
+   diam-diam** (default 200) tanpa error. `thing/space/device` camelCase; device detail & `space/*` snake.
 2. **Space ID biasanya number** (`int64` polos), tapi `bindSpaceId` di endpoint itu **string**.
-3. **Halaman terakhir = `data: []` dan `last_row_key` hilang** (ter-decode 0). `ContainsDevice`
+3. **`name` beda arti antar keluarga device.** *thing* (detail, space/project): `name` = nama pabrik,
+   `customName` = rename user. *app* (user list, home): `name` **itu** rename user. Detail di README.
+4. **Halaman terakhir = `data: []` dan `last_row_key` hilang** (ter-decode 0). `ContainsDevice`
    berhenti di situ, plus deteksi cursor macet, plus cap.
-4. **`relation` transitif** (`relation(root, cucu) = true`), jadi `assertSpaceOwned` sah. Tapi
-   **`relation(X, X)` = false**: short-circuit `target == root` syarat kebenaran, bukan optimisasi —
-   tanpa itu owner ditolak masuk ke space-nya sendiri. Dan space milik project lain **error**
-   `40001900` (`ErrSpaceNotOwned` lewat `cloud.APIError` + `cloud.CodeNoSpacePermission`), bukan `false`.
-5. **Query param wajib urut ASCII**, kalau tidak `1004 sign invalid`. Semua query dibangun lewat
+5. **`relation` transitif** (`relation(root,cucu)=true`) jadi `assertSpaceOwned` sah; tapi
+   **`relation(X,X)`=false**, jadi short-circuit `target == root` itu syarat kebenaran — tanpa itu
+   owner ditolak dari space-nya sendiri. Space project lain **error** `40001900` → `ErrSpaceNotOwned`.
+6. **Query param wajib urut ASCII**, kalau tidak `1004 sign invalid`. Semua query dibangun lewat
    `url.Values.Encode()` yang mengurutkan sendiri — jangan merakit query string dengan tangan.
 
 ## Conventions
@@ -141,8 +140,8 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   `tuya.NewSpaceClient` terima `iot` sebagai interface yang didefinisikan di root, bukan implementor
 - Nama pintu & store = nama model device Tuya, jangan `Client`/`Store` polos. Penjawab kepemilikan
   `(bool, error)` dan namanya kata kerja bertanya — bukan `AssertX`/`MustX`.
-- `tuya.Space`/`tuya.Device` sengaja senama dengan `cloud.Space`/`cloud.Device`,
-  `postgres.AppAccountStore` dengan `tuya.AppAccountStore` — selalu ada kualifikasi package.
+- `tuya.Space` sengaja senama dengan `cloud.Space`, `postgres.AppAccountStore` dengan
+  `tuya.AppAccountStore` — selalu ada kualifikasi package. `tuya.Device` embed `cloud.UserDevice`.
 - Adapter punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat
   compile; konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` menaikkan
   seluruh schema, dipanggil dari store mana pun. Kolom tetap `text`/`bigint`, tanpa konversi.

@@ -19,7 +19,7 @@ type AppAccount struct {
 }
 
 type Device struct {
-	cloud.Device
+	cloud.UserDevice
 	Channels []cloud.Channel `json:"channels"`
 }
 
@@ -55,7 +55,7 @@ func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]Dev
 	}
 	devices := make([]Device, len(found))
 	for idx, device := range found {
-		devices[idx] = Device{Device: device, Channels: []cloud.Channel{}}
+		devices[idx] = Device{UserDevice: device, Channels: []cloud.Channel{}}
 	}
 	if err := c.resolveChannelNames(ctx, devices); err != nil {
 		return nil, fmt.Errorf("resolve channel names: %w", err)

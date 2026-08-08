@@ -530,8 +530,9 @@ Each one is a domain or usage constraint, not an oversight.
   The **field** followed the behavior, one release late. `cloud.Device` used to carry a
   `CodeNameMapping` slot that no Tuya response ever filled — only `resolveChannelNames` wrote to
   it, from a different endpoint. A struct field that exists so the layer above has somewhere to
-  put its results is the same violation as a method, just quieter. `cloud.Device` is now exactly
-  what `GET /v1.0/users/{uid}/devices` returns, and `tuya.Device` embeds it and adds `Channels`.
+  put its results is the same violation as a method, just quieter. `cloud.UserDevice` is now
+  exactly what `GET /v1.0/users/{uid}/devices` returns, and `tuya.Device` embeds it and adds
+  `Channels`.
 
   The rule binds `IoT`, not `cloud.Client`. The transport keeps its policy — token refresh,
   retry on code `1010` — because that is protocol correctness, not domain composition.
@@ -539,6 +540,40 @@ Each one is a domain or usage constraint, not an oversight.
   The cost is real and worth stating: a consumer binding `cloud.IoT` on its own gets no
   batteries. Wanting channel labels means writing the fan-out. That is the trade for a layer
   you can audit against the vendor's API docs line by line.
+
+- **One result type per endpoint, named after its method. There is no `cloud.Device`.**
+  Tuya's device APIs fall into two families that disagree about their own field names, and the
+  disagreement is not just cosmetic. Verified on a live Singapore project, same devices, same
+  day:
+
+  | | *thing* family | *app* family |
+  |---|---|---|
+  | endpoints | device detail, devices in space, devices in project | user device list, devices in home |
+  | casing | detail snake, the listings **camelCase** | snake |
+  | `name` | the **factory** name | the **user's rename** |
+  | rename lives in | `custom_name` / `customName` | nowhere — it *is* `name` |
+  | online flag | `is_online` / `isOnline` | `online` |
+  | extras | `bind_space_id` | `uid`, `owner_id`, `biz_type`, `node_id`, `status` |
+
+  One device makes it concrete. `ebb5cf…czab` is `{name: "Smart plug", custom_name: "Lampu Tidur
+  Mama dan Acy"}` in device detail, and `{name: "Lampu Tidur Mama dan Acy"}` in the user list.
+  The same key, two meanings, and **both decode without error** — a consumer that switches
+  listings silently starts showing factory model numbers to end users.
+
+  So the type carries the endpoint in its name: `UserDevices` returns `[]UserDevice`,
+  `SpaceDevices` returns `[]SpaceDevice`. A generic `Device` would be an invitation to assume the
+  two are interchangeable. Two consequences worth stating in advance, because both will be
+  tempting the day `Query Device Details` gets wrapped: its 20 fields are *identical* to
+  `SpaceDevice`'s and differ only in casing, and it still gets **its own struct**. No shared type,
+  and no `UnmarshalJSON` that accepts both casings — that would hide which endpoint answered, and
+  would go quiet on the day Tuya fixes one of them.
+
+  `owner_id` in the app family is a **space ID**, not a Tuya UID; `uid` is the Tuya UID. The
+  names are Tuya's, so the fields keep them, and the surprise is a comment on the field.
+
+  Why Tuya does this is a guess, and it stays a guess: two services generated from one model
+  where only one set a snake_case naming strategy. What is not a guess is that both shapes are
+  public contract now, so neither can be assumed to converge.
 
 - **`cloud.New` prefetches a token with `context.Background()`.**
   Construction-time prefetch turns a bad credential or unreachable region into a wiring-time
@@ -657,7 +692,7 @@ space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      wire types Device/SpaceDevice/DataPoint/Channel + one method per device endpoint.
+  device.go      wire types UserDevice/SpaceDevice/DataPoint/Channel, one per endpoint + its method.
   space.go       Space/Resource/Page + one method per space endpoint.
 postgres/
   app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.

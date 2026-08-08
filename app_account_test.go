@@ -31,7 +31,7 @@ func (f *fakeStore) Unlink(context.Context, string) error {
 }
 
 type fakeIoT struct {
-	devices    []cloud.Device
+	devices    []cloud.UserDevice
 	channels   map[string][]cloud.Channel
 	listErr    error
 	channelErr error
@@ -40,9 +40,9 @@ type fakeIoT struct {
 	channelIDs []string
 }
 
-func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
+func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]cloud.UserDevice, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
-	out := make([]cloud.Device, len(f.devices))
+	out := make([]cloud.UserDevice, len(f.devices))
 	copy(out, f.devices)
 	return out, f.listErr
 }
@@ -63,13 +63,13 @@ func linkedAccount() tuya.AppAccount {
 	return tuya.AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
-func ownedDevices() []cloud.Device {
-	return []cloud.Device{{ID: "dev-1", Category: "kg"}}
+func ownedDevices() []cloud.UserDevice {
+	return []cloud.UserDevice{{ID: "dev-1", Category: "kg"}}
 }
 
 func TestListDevices(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []cloud.Device{{ID: "dev-1"}}}
+	iot := &fakeIoT{devices: []cloud.UserDevice{{ID: "dev-1"}}}
 	c := tuya.NewAppAccountClient(iot, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
@@ -92,7 +92,7 @@ func TestListDevices(t *testing.T) {
 func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
-		devices: []cloud.Device{
+		devices: []cloud.UserDevice{
 			{ID: "switch-1", Category: "kg"},
 			{ID: "outlet-1", Category: "cz"},
 			{ID: "sensor-1", Category: "wsdcg"},
@@ -128,7 +128,7 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
-		devices:    []cloud.Device{{ID: "switch-1", Category: "kg"}},
+		devices:    []cloud.UserDevice{{ID: "switch-1", Category: "kg"}},
 		channelErr: errors.New("boom"),
 	}
 	c := tuya.NewAppAccountClient(iot, store)
@@ -175,7 +175,7 @@ func TestHasDevice(t *testing.T) {
 
 func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []cloud.Device{{ID: "someone-elses-device"}}}
+	iot := &fakeIoT{devices: []cloud.UserDevice{{ID: "someone-elses-device"}}}
 	c := tuya.NewAppAccountClient(iot, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {
