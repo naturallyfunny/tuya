@@ -322,7 +322,7 @@ func TestTheOwnersSpaceCannotBeDeletedThroughTheDoor(t *testing.T) {
 }
 
 func TestASpaceOutsideTheProjectIsRefusedAsUnowned(t *testing.T) {
-	iot := &fakeSpaceIoT{containsErr: &cloud.APIError{Code: cloud.CodeNoSpacePermission, Msg: "No space permission"}}
+	iot := &fakeSpaceIoT{containsErr: &cloud.APIError{Code: tuya.CodeNoSpacePermission, Msg: "No space permission"}}
 	door := newSpaceDoor(t, iot)
 	if _, err := door.Space(context.Background(), "owner-1", foreign); !errors.Is(err, tuya.ErrSpaceNotOwned) {
 		t.Errorf("Space error = %v, want ErrSpaceNotOwned", err)

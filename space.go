@@ -134,6 +134,11 @@ func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id int64)
 	return true, nil
 }
 
+const (
+	deviceScanPageSize = 200
+	deviceScanMaxPages = 50
+)
+
 func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string) (bool, error) {
 	ownerSpace, err := c.ownerSpace(ctx, owner)
 	if err != nil {
@@ -180,6 +185,8 @@ func (c *SpaceClient) resolve(ctx context.Context, owner string, id int64) (owne
 	return ownerSpace, id, nil
 }
 
+const CodeNoSpacePermission = 40001900
+
 func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target int64) error {
 	if target == ownerSpace {
 		return nil
@@ -187,7 +194,7 @@ func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target i
 	contains, err := c.iot.SpaceRelation(ctx, ownerSpace, target)
 	if err != nil {
 		var apiErr *cloud.APIError
-		if errors.As(err, &apiErr) && apiErr.Code == cloud.CodeNoSpacePermission {
+		if errors.As(err, &apiErr) && apiErr.Code == CodeNoSpacePermission {
 			return ErrSpaceNotOwned
 		}
 		return fmt.Errorf("verify space ownership: %w", err)
@@ -197,8 +204,3 @@ func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target i
 	}
 	return nil
 }
-
-const (
-	deviceScanPageSize = 200
-	deviceScanMaxPages = 50
-)

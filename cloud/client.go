@@ -63,8 +63,6 @@ type response struct {
 	Msg     string          `json:"msg"`
 }
 
-const CodeNoSpacePermission = 40001900
-
 type APIError struct {
 	Code int
 	Msg  string
