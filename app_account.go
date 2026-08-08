@@ -31,12 +31,17 @@ type AppAccountStore interface {
 	Unlink(ctx context.Context, owner string) error
 }
 
+type AppAccountIoT interface {
+	UserDevices(ctx context.Context, tuyaUID string) ([]cloud.UserDevice, error)
+	DeviceChannelNames(ctx context.Context, deviceID string) ([]cloud.Channel, error)
+}
+
 type AppAccountClient struct {
-	iot   IoT
+	iot   AppAccountIoT
 	store AppAccountStore
 }
 
-func NewAppAccountClient(iot IoT, store AppAccountStore) *AppAccountClient {
+func NewAppAccountClient(iot AppAccountIoT, store AppAccountStore) *AppAccountClient {
 	return &AppAccountClient{iot: iot, store: store}
 }
 

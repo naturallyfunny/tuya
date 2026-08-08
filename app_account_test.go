@@ -150,7 +150,7 @@ func TestListDevicesAccountNotLinked(t *testing.T) {
 		t.Fatalf("ListDevices: got %v, want ErrAccountNotLinked", err)
 	}
 	if iot.listCalled() {
-		t.Error("ListDevices delegated to IoT despite unlinked account")
+		t.Error("ListDevices delegated to AppAccountIoT despite unlinked account")
 	}
 }
 

@@ -78,7 +78,7 @@ Three composable tiers. Bind the one your caller needs:
 
 - **`tuya.AppAccountClient`** — resolves owner → Tuya UID through an `AppAccountStore`, lists
   that account's devices with channel names filled in, and answers `HasDevice`. It owns
-  `AppAccount`, `ErrAccountNotLinked`, and the `AppAccountStore` / `IoT` interfaces it drives —
+  `AppAccount`, `ErrAccountNotLinked`, and the `AppAccountStore` / `AppAccountIoT` interfaces it drives —
   including the membership check itself, which is built here from plain `cloud` primitives
   rather than asked of `cloud`.
 
@@ -375,10 +375,13 @@ Each one is a domain or usage constraint, not an oversight.
   product is bent around them.
 
 - **`cloud` exports concrete types; the *consumer* declares the interface.**
-  `cloud.NewIoT` returns a concrete `*cloud.IoT`. The root package declares `tuya.IoT` as
-  narrowly as its doors need, and `*cloud.IoT` satisfies it structurally. This is
+  `cloud.NewIoT` returns a concrete `*cloud.IoT`. Each root door declares its own interface —
+  `tuya.AppAccountIoT`, `tuya.SpaceIoT` — as narrowly as that door needs, and `*cloud.IoT`
+  satisfies both structurally. The door's name is in the interface's name because neither is a
+  general facade: one is two methods wide, the other seven, and each lists only what that door
+  calls. This is
   "accept interfaces, return structs" applied literally — mocking is the consumer's concern,
-  so `app_account_test.go` fakes `tuya.IoT` and `tuya.AppAccountStore` with zero test-only code in
+  so `app_account_test.go` fakes `tuya.AppAccountIoT` and `tuya.AppAccountStore` with zero test-only code in
   `cloud`. Exporting a speculative interface from `cloud` would only add a
   compatibility burden that widens with every new domain.
 
@@ -645,7 +648,7 @@ go test ./...
 ```
 
 The root `tuya` package — where the owner mapping lives, and where a wrong answer misleads
-whatever authorization you build on it — is unit-tested against fake `IoT`, `SpaceIoT` and store
+whatever authorization you build on it — is unit-tested against fake `AppAccountIoT`, `SpaceIoT` and store
 implementations: happy paths, `ErrAccountNotLinked` / `ErrSpaceNotLinked` / `ErrSpaceNotOwned`,
 and the distinction the ownership answers depend on — an absent device is a plain `false` while
 a failed lookup is an error, never the two collapsed together. It also pins the cost rule (an
@@ -700,11 +703,9 @@ rather than assembled from a types file and a behavior file. The store adapters 
 same rule, which is why they are `app_account.go` and not `store.go`.
 
 ```
-iot.go           Package doc, the Owner type, and the consumer-side IoT interface.
-                 What both doors share.
 app_account.go   The app-account door, end to end: AppAccount, Device, ErrAccountNotLinked,
-                 AppAccountStore, AppAccountClient — ListDevices, HasDevice, and
-                 the channel-name fan-out with the multi-gang judgement it needs.
+                 AppAccountStore, AppAccountIoT, AppAccountClient — ListDevices, HasDevice,
+                 and the channel-name fan-out with the multi-gang judgement it needs.
 space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
                  ErrSpaceNotOwned, ErrOwnerSpaceProtected, SpaceStore, SpaceIoT,
                  SpaceClient — the space operations with their containment check,

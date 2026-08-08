@@ -14,12 +14,12 @@ dengan brute force lalu menagihkannya diam-diam.
 
 Root dipecah **per pintu**, bukan per jenis deklarasi. Dependency acyclic: **postgres → tuya →
 cloud**. Nama file store = nama pintunya, bukan `store.go`. Domain baru → file baru; method `IoT`
-ditulis di file domainnya, bukan di client.go.
+ditulis di file domainnya, bukan di client.go. **Tidak ada file tanpa pintu di root**: interface
+IoT tiap pintu berprefiks nama pintunya dan tinggal di file pintunya.
 
 ```
-iot.go          package doc + interface IoT. Tanpa pintu.
-app_account.go  Pintu app-account utuh: tipe, error, store interface, client, + isMultiGang
-                (heuristik kategori kg/cz*) dan resolveChannelNames (fan-out + errors.Join).
+app_account.go  Pintu app-account utuh: tipe, error, store + AppAccountIoT interface, client,
+                + isMultiGang (kategori kg/cz*) dan resolveChannelNames (fan-out + errors.Join).
 space.go        Pintu spatial utuh, pola sama: resolve → assertSpaceOwned → delegate.
                 ID 0 = space owner, bukan top level project.
 cloud/          Layer Tuya murni, trusted, tanpa konsep owner. client.go: transport (token
