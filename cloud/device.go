@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
 type Channel struct {
@@ -18,14 +21,13 @@ type DataPoint struct {
 }
 
 type Device struct {
-	ID              string      `json:"id"`
-	Category        string      `json:"category"`
-	Name            string      `json:"name"`
-	Status          []DataPoint `json:"status"`
-	CodeNameMapping []Channel   `json:"code_name_mapping"`
+	ID       string      `json:"id"`
+	Category string      `json:"category"`
+	Name     string      `json:"name"`
+	Status   []DataPoint `json:"status"`
 }
 
-func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
+func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]Device, error) {
 	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
@@ -33,6 +35,61 @@ func (c *IoT) ListDevices(ctx context.Context, tuyaUID string) ([]Device, error)
 	var devices []Device
 	if err := json.Unmarshal(raw, &devices); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal device list: %w", err)
+	}
+	return devices, nil
+}
+
+type SpaceDevice struct {
+	ID          string `json:"id"`
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	CustomName  string `json:"customName"`
+	Category    string `json:"category"`
+	ProductID   string `json:"productId"`
+	ProductName string `json:"productName"`
+	Icon        string `json:"icon"`
+	IP          string `json:"ip"`
+	Lat         string `json:"lat"`
+	Lon         string `json:"lon"`
+	TimeZone    string `json:"timeZone"`
+	LocalKey    string `json:"localKey"`
+	Sub         bool   `json:"sub"`
+	IsOnline    bool   `json:"isOnline"`
+	ActiveTime  int64  `json:"activeTime"`
+	CreateTime  int64  `json:"createTime"`
+	UpdateTime  int64  `json:"updateTime"`
+}
+
+func (c *IoT) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
+	ids := make([]string, len(spaceIDs))
+	for i, id := range spaceIDs {
+		ids[i] = strconv.FormatInt(id, 10)
+	}
+	query := url.Values{}
+	query.Set("space_ids", strings.Join(ids, ","))
+	query.Set("is_recursion", strconv.FormatBool(recursive))
+	if len(productIDs) > 0 {
+		query.Set("product_ids", strings.Join(productIDs, ","))
+	}
+	if len(categories) > 0 {
+		query.Set("categories", strings.Join(categories, ","))
+	}
+	if lastID != "" {
+		query.Set("last_id", lastID)
+	}
+	if pageSize != 0 {
+		query.Set("page_size", strconv.Itoa(pageSize))
+	}
+	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", query.Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var devices []SpaceDevice
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &devices); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal the device list of spaces %s: %w", query.Get("space_ids"), err)
+		}
 	}
 	return devices, nil
 }

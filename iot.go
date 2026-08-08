@@ -7,6 +7,6 @@ import (
 )
 
 type IoT interface {
-	ListDevices(ctx context.Context, tuyaUID string) ([]cloud.Device, error)
+	UserDevices(ctx context.Context, tuyaUID string) ([]cloud.Device, error)
 	DeviceChannelNames(ctx context.Context, deviceID string) ([]cloud.Channel, error)
 }

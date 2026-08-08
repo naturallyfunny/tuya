@@ -18,6 +18,11 @@ type AppAccount struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type Device struct {
+	cloud.Device
+	Channels []cloud.Channel `json:"channels"`
+}
+
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
 
 type AppAccountStore interface {
@@ -39,17 +44,18 @@ func (c *AppAccountClient) Account(ctx context.Context, owner string) (AppAccoun
 	return c.store.Get(ctx, owner)
 }
 
-func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]cloud.Device, error) {
+func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]Device, error) {
 	acc, err := c.store.Get(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	devices, err := c.iot.ListDevices(ctx, acc.TuyaUID)
+	found, err := c.iot.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return nil, err
 	}
-	if len(devices) == 0 {
-		return []cloud.Device{}, nil
+	devices := make([]Device, len(found))
+	for idx, device := range found {
+		devices[idx] = Device{Device: device, Channels: []cloud.Channel{}}
 	}
 	if err := c.resolveChannelNames(ctx, devices); err != nil {
 		return nil, fmt.Errorf("resolve channel names: %w", err)
@@ -62,7 +68,7 @@ func (c *AppAccountClient) HasDevice(ctx context.Context, owner, deviceID string
 	if err != nil {
 		return false, err
 	}
-	devices, err := c.iot.ListDevices(ctx, acc.TuyaUID)
+	devices, err := c.iot.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
 	}
@@ -79,13 +85,10 @@ func isMultiGang(category string) bool {
 	return c == "kg" || strings.HasPrefix(c, "cz")
 }
 
-func (c *AppAccountClient) resolveChannelNames(ctx context.Context, devices []cloud.Device) error {
-	var targets []*cloud.Device
+func (c *AppAccountClient) resolveChannelNames(ctx context.Context, devices []Device) error {
+	var targets []*Device
 	for idx := range devices {
 		device := &devices[idx]
-		if device.CodeNameMapping == nil {
-			device.CodeNameMapping = []cloud.Channel{}
-		}
 		if isMultiGang(device.Category) && device.ID != "" {
 			targets = append(targets, device)
 		}
@@ -110,7 +113,7 @@ func (c *AppAccountClient) resolveChannelNames(ctx context.Context, devices []cl
 			if channels == nil {
 				return
 			}
-			device.CodeNameMapping = channels
+			device.Channels = channels
 		})
 	}
 	wg.Wait()

@@ -75,10 +75,10 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya — Tuya otoritas atas token yang
   dia terbitkan. Menyatukannya mematikan retry: jalur reaktif return nil tanpa berbuat apa pun, lalu
   request diulang dengan token yang barusan ditolak. Dijaga `cloud/client_test.go`.
-- **`cloud.IoT` = satu method, satu endpoint. Aturan keras.** Method yang tidak bisa ditunjuk ke
-  tepat satu endpoint sedang menyusun perilaku, dan itu milik pemanggil; tergoda menambah `HasX`
-  atau "list yang sekalian di-enrich" = tanda komposisinya harus dibangun di root. Batas ini untuk
-  `IoT`, bukan `Client`: transport boleh punya kebijakan (refresh, retry) — itu kebenaran protokol.
+- **`cloud.IoT` = satu method satu endpoint; `cloud.Device` = cuma field yang wire-nya kirim.**
+  Yang tak bisa ditunjuk ke satu endpoint sedang menyusun perilaku — itu milik pemanggil: `HasX`,
+  "list sekalian di-enrich", atau slot kosong buat hasil layer atas (dulu `CodeNameMapping`, kini
+  `tuya.Device.Channels`) = dibangun di root. `Client` dikecualikan: refresh/retry = kebenaran protokol.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan.** Library tidak pernah tahu owner itu
   "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
   identifier, tabel, atau kolom.
@@ -141,8 +141,8 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   `tuya.NewSpaceClient` terima `iot` sebagai interface yang didefinisikan di root, bukan implementor
 - Nama pintu & store = nama model device Tuya, jangan `Client`/`Store` polos. Penjawab kepemilikan
   `(bool, error)` dan namanya kata kerja bertanya — bukan `AssertX`/`MustX`.
-- `tuya.Space` sengaja senama dengan `cloud.Space`, `postgres.AppAccountStore` dengan
-  `tuya.AppAccountStore` — di kode selalu ada kualifikasi package.
+- `tuya.Space`/`tuya.Device` sengaja senama dengan `cloud.Space`/`cloud.Device`,
+  `postgres.AppAccountStore` dengan `tuya.AppAccountStore` — selalu ada kualifikasi package.
 - Adapter punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat
   compile; konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` menaikkan
   seluruh schema, dipanggil dari store mana pun. Kolom tetap `text`/`bigint`, tanpa konversi.

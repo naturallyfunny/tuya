@@ -40,7 +40,7 @@ type fakeIoT struct {
 	channelIDs []string
 }
 
-func (f *fakeIoT) ListDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
+func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]cloud.Device, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
 	out := make([]cloud.Device, len(f.devices))
 	copy(out, f.devices)
@@ -84,8 +84,8 @@ func TestListDevices(t *testing.T) {
 	if len(iot.channelIDs) != 0 {
 		t.Errorf("channel names requested for %v, want none", iot.channelIDs)
 	}
-	if got[0].CodeNameMapping == nil {
-		t.Error("CodeNameMapping is nil, want an empty non-nil slice")
+	if got[0].Channels == nil {
+		t.Error("Channels is nil, want an empty non-nil slice")
 	}
 }
 
@@ -109,7 +109,7 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	}
 	byID := map[string][]cloud.Channel{}
 	for _, d := range got {
-		byID[d.ID] = d.CodeNameMapping
+		byID[d.ID] = d.Channels
 	}
 	if len(byID["switch-1"]) != 1 || byID["switch-1"][0].Name != "Kitchen light" {
 		t.Errorf("switch-1 mapping = %+v, want Kitchen light", byID["switch-1"])

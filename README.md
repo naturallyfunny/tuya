@@ -113,8 +113,8 @@ Three composable tiers. Bind the one your caller needs:
   ID/secret yields an access token it caches in memory and refreshes on its own (lazily on
   expiry, reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. `Do` is a
   raw escape hatch for endpoints not yet wrapped.
-- **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `ListDevices`, `DeviceStatus`,
-  `SendCommands`, `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`,
+- **`cloud.IoT`** — a trusted facade over a `cloud.Client`: `UserDevices`, `SpaceDevices`,
+  `DeviceStatus`, `SendCommands`, `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`,
   `DeleteSpace`, `SpaceResources`, `ListSpaces`, `SpaceRelation` for spaces. One
   method per Tuya endpoint, so each call is one request and nothing is composed behind your
   back — including pagination, which is handed to you a page at a time rather than looped over
@@ -255,9 +255,12 @@ nothing about it for the root door to resolve:
 acc, _ := store.Get(ctx, owner)
 
 // Each call is exactly one Tuya request — no hidden fan-out, no enrichment.
-devices, err := iot.ListDevices(ctx, acc.TuyaUID)          // UID-addressed
+devices, err := iot.UserDevices(ctx, acc.TuyaUID)          // UID-addressed
 status, err := iot.DeviceStatus(ctx, deviceID)             // device-addressed
 channels, err := iot.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, if you want them
+
+// Space-addressed: up to 5 space IDs, optional product/category filters, page by last device ID.
+devices, err := iot.SpaceDevices(ctx, []int64{spaceID}, true, nil, nil, "", 20)
 ```
 
 > `cloud.IoT` and `cloud.Client.Do` know nothing about owners. A holder can reach every device
@@ -405,7 +408,7 @@ Each one is a domain or usage constraint, not an oversight.
   about any of those. A consumer that can learn about them is in a better position to cache than
   this library is.
 
-  The listing comes from `cloud.IoT.ListDevices`. `cloud` deliberately exposes no equivalent: a
+  The listing comes from `cloud.IoT.UserDevices`. `cloud` deliberately exposes no equivalent: a
   method whose reason to exist is the layer above would shape the lower layer around the upper
   one. `cloud` answers "what is on this UID"; the root package is what knows that UID belongs to
   your owner. `HasDevice` never asks for channel labels either — it needs identity, not names,
@@ -524,6 +527,12 @@ Each one is a domain or usage constraint, not an oversight.
   `DeviceChannelNames` wraps `GET /v1.0/devices/{id}/multiple-names` and nothing more;
   `tuya.AppAccountClient` fans it out across the devices it judges worth labelling.
 
+  The **field** followed the behavior, one release late. `cloud.Device` used to carry a
+  `CodeNameMapping` slot that no Tuya response ever filled — only `resolveChannelNames` wrote to
+  it, from a different endpoint. A struct field that exists so the layer above has somewhere to
+  put its results is the same violation as a method, just quieter. `cloud.Device` is now exactly
+  what `GET /v1.0/users/{uid}/devices` returns, and `tuya.Device` embeds it and adds `Channels`.
+
   The rule binds `IoT`, not `cloud.Client`. The transport keeps its policy — token refresh,
   retry on code `1010` — because that is protocol correctness, not domain composition.
 
@@ -638,7 +647,7 @@ same rule, which is why they are `app_account.go` and not `store.go`.
 ```
 iot.go           Package doc, the Owner type, and the consumer-side IoT interface.
                  What both doors share.
-app_account.go   The app-account door, end to end: AppAccount, ErrAccountNotLinked,
+app_account.go   The app-account door, end to end: AppAccount, Device, ErrAccountNotLinked,
                  AppAccountStore, AppAccountClient — ListDevices, HasDevice, and
                  the channel-name fan-out with the multi-gang judgement it needs.
 space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
@@ -648,7 +657,7 @@ space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      typed Device/DataPoint/Channel + one method per device endpoint.
+  device.go      wire types Device/SpaceDevice/DataPoint/Channel + one method per device endpoint.
   space.go       Space/Resource/Page + one method per space endpoint.
 postgres/
   app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.
