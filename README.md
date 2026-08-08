@@ -680,11 +680,14 @@ honestly low. Wiring them to live infrastructure behind a build tag is on the
 
 - **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
-- **Breaking in v0.10.0: identifiers are plain `string` and `int64`.** `cloud.SpaceID`,
+- **Breaking in v0.7.0: identifiers are plain `string` and `int64`.** `cloud.SpaceID`,
   `cloud.Scope` and its `DirectChildren` / `Subtree` constants are gone; listings take
   `only_sub` as a `bool` (`DirectChildren` → `true`, `Subtree` → `false`). Stored data and DB
   columns are untouched. See [Concepts](#identifiers-are-plain-types).
-- **Breaking in v0.8.0, alongside the spatial door.** `postgres.Option` and `firestore.Option`
+- **Breaking in v0.7.0: each door's facade interface carries the door's name.** `tuya.IoT` is
+  now `tuya.AppAccountIoT`, beside the `tuya.SpaceIoT` it was never a counterpart to. Only code
+  that names the interface in its own signatures is affected; `*cloud.IoT` satisfies it as before.
+- **Breaking in v0.7.0, alongside the spatial door.** `postgres.Option` and `firestore.Option`
   are now `func(*options)` rather than functions over one store type, so `WithAutoMigrate` and
   `WithCollection` serve both stores; call sites that just pass `postgres.WithAutoMigrate()` or
   `firestore.WithCollection("…")` are unaffected. `firestore.DefaultCollection` is now

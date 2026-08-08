@@ -82,7 +82,7 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
   identifier, tabel, atau kolom.
 - **Wrapper tidak bikin vocabulary paralel.** Identifier Tuya dioper telanjang: `string` untuk
-  owner/uid/device id, `int64` untuk space id. Sudah dicoba dan dicabut (v0.10.0) karena tiap
+  owner/uid/device id, `int64` untuk space id. Sudah dicoba dan dicabut (v0.7.0) karena tiap
   pembelaannya runtuh saat dicek: `String()` di path URL sama saja dengan `%d` (`encoding/json`
   mengabaikan `fmt.Stringer`); untyped string constant otomatis dikonversi, jadi literal tertukar
   tetap lolos dan `go vet` diam; parameter posisional tidak bisa dilupakan, jadi guard nilai-nol
