@@ -74,10 +74,10 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
 - **Dua jalur refresh token, jangan disatukan** (dijaga `cloud/client_test.go`). `ensureValidToken`
   (lazy) percaya expiry cache; `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya —
   Tuya otoritas atas tokennya. Disatukan = retry mati: reaktif return nil, token ditolak dipakai ulang.
-- **`cloud.IoT` = satu method satu endpoint; nama tipe hasil = nama method-nya, isinya cuma field
-  yang wire-nya kirim.** Yang tak bisa ditunjuk ke satu endpoint sedang menyusun perilaku — itu milik
-  pemanggil: `HasX`, "list di-enrich", slot hasil layer atas (`tuya.Device.Channels`) = di root. Tak
-  ada `cloud.Device` polos (Fakta 3). `Client` dikecualikan: refresh/retry = kebenaran protokol.
+- **`cloud.IoT` = satu method satu endpoint; nama tipe = nama method; tipe device subset wire —
+  identitas, bukan presentasi.** Komposisi (`HasX`, list-yang-di-enrich) milik pemanggil, di root;
+  tak ada `cloud.Device` polos (Fakta 3). Keep = identifier + `status`/flag yang jadi N request
+  kalau dibuang + yang dibaca kode kita; `local_key` rahasia. `Client`: refresh/retry dikecualikan.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan.** Library tidak pernah tahu owner itu
   "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
   identifier, tabel, atau kolom.

@@ -10,44 +10,21 @@ import (
 	"strings"
 )
 
-type Channel struct {
-	Identifier string `json:"identifier"`
-	Name       string `json:"name"`
-}
-
 type DataPoint struct {
 	Code  string `json:"code"`
 	Value any    `json:"value"`
 }
 
 type UserDevice struct {
-	ID   string `json:"id"`
-	UUID string `json:"uuid"`
-	// NodeID is sent for sub-devices only.
-	NodeID string `json:"node_id"`
+	ID string `json:"id"`
 	// Name here is what the user renamed the device to; SpaceDevice.Name is the factory name
 	// and puts the rename in CustomName instead.
-	Name        string `json:"name"`
-	Category    string `json:"category"`
-	ProductID   string `json:"product_id"`
-	ProductName string `json:"product_name"`
-	Model       string `json:"model"`
-	UID         string `json:"uid"`
-	// OwnerID is a space ID, not a Tuya UID.
-	OwnerID    string      `json:"owner_id"`
-	LocalKey   string      `json:"local_key"`
-	Icon       string      `json:"icon"`
-	IP         string      `json:"ip"`
-	Lat        string      `json:"lat"`
-	Lon        string      `json:"lon"`
-	TimeZone   string      `json:"time_zone"`
-	BizType    int         `json:"biz_type"`
-	Sub        bool        `json:"sub"`
-	Online     bool        `json:"online"`
-	Status     []DataPoint `json:"status"`
-	ActiveTime int64       `json:"active_time"`
-	CreateTime int64       `json:"create_time"`
-	UpdateTime int64       `json:"update_time"`
+	Name      string      `json:"name"`
+	Category  string      `json:"category"`
+	ProductID string      `json:"product_id"`
+	Sub       bool        `json:"sub"`
+	Online    bool        `json:"online"`
+	Status    []DataPoint `json:"status"`
 }
 
 func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, error) {
@@ -63,28 +40,18 @@ func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, er
 }
 
 type SpaceDevice struct {
-	ID   string `json:"id"`
-	UUID string `json:"uuid"`
+	ID string `json:"id"`
 	// Name here is the factory name; the user's rename is CustomName. UserDevice.Name is the
 	// other way round.
-	Name        string `json:"name"`
-	CustomName  string `json:"customName"`
-	Category    string `json:"category"`
-	ProductID   string `json:"productId"`
-	ProductName string `json:"productName"`
-	Model       string `json:"model"`
+	Name       string `json:"name"`
+	CustomName string `json:"customName"`
+	Category   string `json:"category"`
+	ProductID  string `json:"productId"`
+	// BindSpaceID is which of the requested spaces the device sits in. Arrives as a string
+	// even though every other space id in this API is a number.
 	BindSpaceID string `json:"bindSpaceId"`
-	Icon        string `json:"icon"`
-	IP          string `json:"ip"`
-	Lat         string `json:"lat"`
-	Lon         string `json:"lon"`
-	TimeZone    string `json:"timeZone"`
-	LocalKey    string `json:"localKey"`
 	Sub         bool   `json:"sub"`
 	IsOnline    bool   `json:"isOnline"`
-	ActiveTime  int64  `json:"activeTime"`
-	CreateTime  int64  `json:"createTime"`
-	UpdateTime  int64  `json:"updateTime"`
 }
 
 func (c *IoT) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
@@ -146,6 +113,11 @@ func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []Data
 		return fmt.Errorf("failed to send commands: %w", err)
 	}
 	return nil
+}
+
+type Channel struct {
+	Identifier string `json:"identifier"`
+	Name       string `json:"name"`
 }
 
 func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {

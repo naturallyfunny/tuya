@@ -530,9 +530,9 @@ Each one is a domain or usage constraint, not an oversight.
   The **field** followed the behavior, one release late. `cloud.Device` used to carry a
   `CodeNameMapping` slot that no Tuya response ever filled — only `resolveChannelNames` wrote to
   it, from a different endpoint. A struct field that exists so the layer above has somewhere to
-  put its results is the same violation as a method, just quieter. `cloud.UserDevice` is now
-  exactly what `GET /v1.0/users/{uid}/devices` returns, and `tuya.Device` embeds it and adds
-  `Channels`.
+  put its results is the same violation as a method, just quieter. `cloud.UserDevice` now holds
+  only fields `GET /v1.0/users/{uid}/devices` actually sends, and `tuya.Device` embeds it and
+  adds `Channels`.
 
   The rule binds `IoT`, not `cloud.Client`. The transport keeps its policy — token refresh,
   retry on code `1010` — because that is protocol correctness, not domain composition.
@@ -562,14 +562,34 @@ Each one is a domain or usage constraint, not an oversight.
 
   So the type carries the endpoint in its name: `UserDevices` returns `[]UserDevice`,
   `SpaceDevices` returns `[]SpaceDevice`. A generic `Device` would be an invitation to assume the
-  two are interchangeable. Two consequences worth stating in advance, because both will be
-  tempting the day `Query Device Details` gets wrapped: its 20 fields are *identical* to
-  `SpaceDevice`'s and differ only in casing, and it still gets **its own struct**. No shared type,
-  and no `UnmarshalJSON` that accepts both casings — that would hide which endpoint answered, and
-  would go quiet on the day Tuya fixes one of them.
+  two are interchangeable. Worth stating in advance, because it will be tempting the day
+  `Query Device Details` gets wrapped: on the wire its fields are *identical* to the
+  space listing's and differ only in casing, and it still gets **its own struct**. No shared
+  type, and no `UnmarshalJSON` that accepts both casings — that would hide which endpoint
+  answered, and would go quiet on the day Tuya fixes one of them.
 
-  `owner_id` in the app family is a **space ID**, not a Tuya UID; `uid` is the Tuya UID. The
-  names are Tuya's, so the fields keep them, and the surprise is a comment on the field.
+- **The device types are a subset of the wire, and the line is identity over presentation.**
+  Both listings send around twenty fields. The types keep seven and eight of them: the device's
+  own identifiers, the two flags and the `status` that would otherwise cost one request per
+  device to recover, and the `category` that `isMultiGang` reads. `product_id` stays because it
+  is an identifier and because `SpaceDevices` takes `product_ids` as a filter — a field this
+  package asks for on the way in has to be available on the way out.
+
+  Dropped: `icon`, `model`, `product_name`, `lat`, `lon`, `ip`, `time_zone`, `uuid`, `node_id`,
+  `biz_type`, and the activate/create/update timestamps. Those are labels and presentation, and
+  this library maps identity. Also dropped are `uid`, which the caller passed in to get the list,
+  and `owner_id`, which is a **space ID** despite the name — the spatial door already answers
+  that question.
+
+  **`local_key` is dropped because it is a secret.** It is the device's LAN encryption key, this
+  package has no LAN feature that needs it, and `tuya.Device` carries JSON tags — so a consumer
+  who returns it straight from an HTTP handler publishes every device's key. Note that trimming
+  buys almost no memory: measured on a real device, the whole struct plus its strings is ~960
+  bytes, of which `status` alone is 423 and everything dropped here is about 370. Memory was
+  never the argument.
+
+  A consumer that genuinely needs the dropped fields is not stuck: `cloud.Client.Do` is a public
+  escape hatch, and decoding this endpoint into their own struct is a dozen lines.
 
   Why Tuya does this is a guess, and it stays a guess: two services generated from one model
   where only one set a snake_case naming strategy. What is not a guess is that both shapes are
@@ -692,7 +712,7 @@ space.go         The spatial door, end to end: Space, ErrSpaceNotLinked,
 cloud/
   client.go      cloud.Client transport (token cache/refresh, signing, Do) + IoT facade.
   auth.go        request signing + token lifecycle.
-  device.go      wire types UserDevice/SpaceDevice/DataPoint/Channel, one per endpoint + its method.
+  device.go      UserDevice/SpaceDevice/DataPoint/Channel, one per endpoint + its method.
   space.go       Space/Resource/Page + one method per space endpoint.
 postgres/
   app_account.go AppAccountStore on PostgreSQL + the migration runner both stores share.
