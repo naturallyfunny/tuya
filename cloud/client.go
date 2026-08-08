@@ -58,9 +58,9 @@ type response struct {
 	Success bool            `json:"success"`
 	T       int64           `json:"t"`
 	Tid     string          `json:"tid"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Code    int             `json:"code,omitempty"`
-	Msg     string          `json:"msg,omitempty"`
+	Result  json.RawMessage `json:"result"`
+	Code    int             `json:"code"`
+	Msg     string          `json:"msg"`
 }
 
 const CodeNoSpacePermission = 40001900
