@@ -120,12 +120,12 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
   belum dibungkus, tanpa guard. Dan **`resolveChannelNames` pakai `sync.WaitGroup.Go` +
   `errors.Join`, bukan `errgroup`** — collect-all vs fail-fast, kontrak berbeda bukan cleanup.
 
-## Fakta API — doc Tuya kontradiktif, ini hasil uji sungguhan (DC Singapore, 7 Agustus 2026)
+## Fakta API — doc Tuya kontradiktif, ini hasil uji sungguhan (DC Singapore, 7–8 Agustus 2026)
 
-1. **Query param & response snake_case.** `page_size=3` jalan; `pageSize=3` **diabaikan diam-diam**
-   dan server pakai default 200. Contoh camelCase di doc salah — dan salah ejaan tidak error.
-2. **Space ID datang sebagai number**, bukan string. Kode pakai `int64` polos tanpa `UnmarshalJSON`;
-   kalau suatu hari ada endpoint mengirim string, gejalanya error decode.
+1. **Query param selalu snake_case; casing response beda-beda per modul — jangan diseragamkan.**
+   `page_size=3` jalan, `pageSize=3` **diabaikan diam-diam** (default 200) tanpa error. Response
+   `cloud/space/*` snake_case (contoh di doc salah), `cloud/thing/space/device` **camelCase**.
+2. **Space ID biasanya number** (`int64` polos), tapi `bindSpaceId` di endpoint itu **string**.
 3. **Halaman terakhir = `data: []` dan `last_row_key` hilang** (ter-decode 0). `ContainsDevice`
    berhenti di situ, plus deteksi cursor macet, plus cap.
 4. **`relation` transitif** (`relation(root, cucu) = true`), jadi `assertSpaceOwned` sah. Tapi

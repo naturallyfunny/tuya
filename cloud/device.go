@@ -47,6 +47,8 @@ type SpaceDevice struct {
 	Category    string `json:"category"`
 	ProductID   string `json:"productId"`
 	ProductName string `json:"productName"`
+	Model       string `json:"model"`
+	BindSpaceID string `json:"bindSpaceId"`
 	Icon        string `json:"icon"`
 	IP          string `json:"ip"`
 	Lat         string `json:"lat"`
