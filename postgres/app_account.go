@@ -13,6 +13,7 @@ import (
 	"go.naturallyfunny.dev/tuya"
 )
 
+//go:embed migrations
 var migrationFiles embed.FS
 
 type Querier interface {
