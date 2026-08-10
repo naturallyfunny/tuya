@@ -2,205 +2,182 @@ package tuya
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
-
-	"go.naturallyfunny.dev/tuya/cloud"
+	"net/http"
+	"net/url"
+	"strconv"
 )
 
 type Space struct {
-	Owner     string    `json:"owner"`
-	SpaceID   int64     `json:"space_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	ParentID int64  `json:"parent_id"`
+	RootID   int64  `json:"root_id"`
 }
 
-var (
-	ErrSpaceNotLinked      = errors.New("tuya: no space linked to owner")
-	ErrSpaceNotOwned       = errors.New("tuya: space does not belong to owner")
-	ErrOwnerSpaceProtected = errors.New("tuya: refusing to delete the space the owner is linked to")
-)
+type SpaceResourceType int
 
-type SpaceStore interface {
-	Get(ctx context.Context, owner string) (Space, error)
-	Link(ctx context.Context, owner string, spaceID int64) (Space, error)
-	Unlink(ctx context.Context, owner string) error
+const SpaceResourceDevice SpaceResourceType = 0
+
+type Resource struct {
+	ID   string            `json:"res_id"`
+	Type SpaceResourceType `json:"res_type"`
 }
 
-type SpaceIoT interface {
-	CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error)
-	Space(ctx context.Context, id int64) (cloud.Space, error)
-	ModifySpace(ctx context.Context, id int64, name, description string) error
-	DeleteSpace(ctx context.Context, id int64) error
-	ListSpaces(ctx context.Context, id int64, onlySub bool, page cloud.Page) ([]int64, cloud.Page, error)
-	SpaceResources(ctx context.Context, id int64, onlySub bool, page cloud.Page) ([]cloud.Resource, cloud.Page, error)
-	SpaceRelation(ctx context.Context, parent, child int64) (bool, error)
+type Page struct {
+	LastRowKey int64 `json:"last_row_key"`
+	PageSize   int   `json:"page_size"`
 }
 
-type SpaceClient struct {
-	iot   SpaceIoT
-	store SpaceStore
+func listQuery(onlySub bool, page Page) url.Values {
+	query := url.Values{}
+	query.Set("only_sub", strconv.FormatBool(onlySub))
+	if page.LastRowKey != 0 {
+		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
+	}
+	if page.PageSize != 0 {
+		query.Set("page_size", strconv.Itoa(page.PageSize))
+	}
+	return query
 }
 
-func NewSpaceClient(iot SpaceIoT, store SpaceStore) *SpaceClient {
-	return &SpaceClient{iot: iot, store: store}
-}
-
-func (c *SpaceClient) SpaceOf(ctx context.Context, owner string) (Space, error) {
-	return c.store.Get(ctx, owner)
-}
-
-func (c *SpaceClient) CreateSpace(ctx context.Context, owner, name string, parentID int64, description string) (int64, error) {
-	ownerSpace, parent, err := c.resolve(ctx, owner, parentID)
+func (c *IoT) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
+	body, err := json.Marshal(struct {
+		Name        string `json:"name"`
+		ParentID    int64  `json:"parent_id,omitempty"`
+		Description string `json:"description,omitempty"`
+	}{Name: name, ParentID: parentID, Description: description})
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal space payload: %w", err)
+	}
+	raw, err := c.client.Do(ctx, http.MethodPost, "/v2.0/cloud/space/creation", body)
 	if err != nil {
 		return 0, err
 	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, parent); err != nil {
-		return 0, err
+	var id int64
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return 0, fmt.Errorf("failed to unmarshal created space id: %w", err)
 	}
-	return c.iot.CreateSpace(ctx, name, parent, description)
+	return id, nil
 }
 
-func (c *SpaceClient) Space(ctx context.Context, owner string, id int64) (cloud.Space, error) {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
+var ErrSpaceNotFound = errors.New("tuya: space not found")
+
+func (c *IoT) Space(ctx context.Context, id int64) (Space, error) {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return cloud.Space{}, err
+		return Space{}, err
 	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		return cloud.Space{}, err
+	if len(raw) == 0 || string(raw) == "null" {
+		return Space{}, fmt.Errorf("space %d: %w", id, ErrSpaceNotFound)
 	}
-	return c.iot.Space(ctx, target)
+	var space Space
+	if err := json.Unmarshal(raw, &space); err != nil {
+		return Space{}, fmt.Errorf("failed to unmarshal space %d: %w", id, err)
+	}
+	return space, nil
 }
 
-func (c *SpaceClient) ModifySpace(ctx context.Context, owner string, id int64, name, description string) error {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
+var ErrNotApplied = errors.New("tuya: operation was not applied")
+
+func (c *IoT) ModifySpace(ctx context.Context, id int64, name, description string) error {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
+	body, err := json.Marshal(struct {
+		Name        string `json:"name,omitempty"`
+		Description string `json:"description,omitempty"`
+	}{Name: name, Description: description})
+	if err != nil {
+		return fmt.Errorf("failed to marshal space payload: %w", err)
+	}
+	raw, err := c.client.Do(ctx, http.MethodPut, path, body)
 	if err != nil {
 		return err
 	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		return err
-	}
-	return c.iot.ModifySpace(ctx, target, name, description)
-}
-
-func (c *SpaceClient) DeleteSpace(ctx context.Context, owner string, id int64) error {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
-	if err != nil {
-		return err
-	}
-	if target == ownerSpace {
-		return ErrOwnerSpaceProtected
-	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		return err
-	}
-	return c.iot.DeleteSpace(ctx, target)
-}
-
-func (c *SpaceClient) ChildSpaces(ctx context.Context, owner string, id int64, onlySub bool, page cloud.Page) ([]int64, cloud.Page, error) {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
-	if err != nil {
-		return nil, cloud.Page{}, err
-	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		return nil, cloud.Page{}, err
-	}
-	return c.iot.ListSpaces(ctx, target, onlySub, page)
-}
-
-func (c *SpaceClient) SpaceResources(ctx context.Context, owner string, id int64, onlySub bool, page cloud.Page) ([]cloud.Resource, cloud.Page, error) {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
-	if err != nil {
-		return nil, cloud.Page{}, err
-	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		return nil, cloud.Page{}, err
-	}
-	return c.iot.SpaceResources(ctx, target, onlySub, page)
-}
-
-func (c *SpaceClient) ContainsSpace(ctx context.Context, owner string, id int64) (bool, error) {
-	ownerSpace, target, err := c.resolve(ctx, owner, id)
-	if err != nil {
-		return false, err
-	}
-	if err := c.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		if errors.Is(err, ErrSpaceNotOwned) {
-			return false, nil
+	var applied bool
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &applied); err != nil {
+			return fmt.Errorf("failed to unmarshal the result of modifying space %d: %w", id, err)
 		}
-		return false, err
 	}
-	return true, nil
-}
-
-const (
-	deviceScanPageSize = 200
-	deviceScanMaxPages = 50
-)
-
-func (c *SpaceClient) ContainsDevice(ctx context.Context, owner, deviceID string) (bool, error) {
-	ownerSpace, err := c.ownerSpace(ctx, owner)
-	if err != nil {
-		return false, err
-	}
-	page := cloud.Page{PageSize: deviceScanPageSize}
-	for range deviceScanMaxPages {
-		resources, next, err := c.iot.SpaceResources(ctx, ownerSpace, false, page)
-		if err != nil {
-			return false, fmt.Errorf("scan resources of space %d: %w", ownerSpace, err)
-		}
-		for _, resource := range resources {
-			if resource.Type == cloud.SpaceResourceDevice && resource.ID == deviceID {
-				return true, nil
-			}
-		}
-		if len(resources) == 0 || next.LastRowKey == 0 || next.LastRowKey == page.LastRowKey {
-			return false, nil
-		}
-		page.LastRowKey = next.LastRowKey
-	}
-	return false, fmt.Errorf("scan resources of space %d: did not end after %d pages", ownerSpace, deviceScanMaxPages)
-}
-
-func (c *SpaceClient) ownerSpace(ctx context.Context, owner string) (int64, error) {
-	space, err := c.store.Get(ctx, owner)
-	if err != nil {
-		return 0, err
-	}
-	if space.SpaceID == 0 {
-		return 0, ErrSpaceNotLinked
-	}
-	return space.SpaceID, nil
-}
-
-func (c *SpaceClient) resolve(ctx context.Context, owner string, id int64) (ownerSpace, target int64, err error) {
-	ownerSpace, err = c.ownerSpace(ctx, owner)
-	if err != nil {
-		return 0, 0, err
-	}
-	if id == 0 {
-		return ownerSpace, ownerSpace, nil
-	}
-	return ownerSpace, id, nil
-}
-
-const CodeNoSpacePermission = 40001900
-
-func (c *SpaceClient) assertSpaceOwned(ctx context.Context, ownerSpace, target int64) error {
-	if target == ownerSpace {
-		return nil
-	}
-	contains, err := c.iot.SpaceRelation(ctx, ownerSpace, target)
-	if err != nil {
-		var apiErr *cloud.APIError
-		if errors.As(err, &apiErr) && apiErr.Code == CodeNoSpacePermission {
-			return ErrSpaceNotOwned
-		}
-		return fmt.Errorf("verify space ownership: %w", err)
-	}
-	if !contains {
-		return ErrSpaceNotOwned
+	if !applied {
+		return fmt.Errorf("modify space %d: %w", id, ErrNotApplied)
 	}
 	return nil
+}
+
+func (c *IoT) DeleteSpace(ctx context.Context, id int64) error {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
+	raw, err := c.client.Do(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	var applied bool
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &applied); err != nil {
+			return fmt.Errorf("failed to unmarshal the result of deleting space %d: %w", id, err)
+		}
+	}
+	if !applied {
+		return fmt.Errorf("delete space %d: %w", id, ErrNotApplied)
+	}
+	return nil
+}
+
+func (c *IoT) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
+	path := fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, listQuery(onlySub, page).Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, Page{}, err
+	}
+	var body struct {
+		Data []Resource `json:"data"`
+		Page
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to unmarshal the resources of space %d: %w", id, err)
+		}
+	}
+	return body.Data, body.Page, nil
+}
+
+func (c *IoT) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
+	query := listQuery(onlySub, page)
+	if id != 0 {
+		query.Set("space_id", strconv.FormatInt(id, 10))
+	}
+	path := fmt.Sprintf("/v2.0/cloud/space/child?%s", query.Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, Page{}, err
+	}
+	var body struct {
+		Data []int64 `json:"data"`
+		Page
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to unmarshal space list: %w", err)
+		}
+	}
+	return body.Data, body.Page, nil
+}
+
+func (c *IoT) SpaceRelation(ctx context.Context, parent, child int64) (bool, error) {
+	query := url.Values{}
+	query.Set("parent_id", strconv.FormatInt(parent, 10))
+	query.Set("child_id", strconv.FormatInt(child, 10))
+	path := fmt.Sprintf("/v2.0/cloud/space/relation?%s", query.Encode())
+	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return false, err
+	}
+	var contains bool
+	if err := json.Unmarshal(raw, &contains); err != nil {
+		return false, fmt.Errorf("failed to unmarshal space relation: %w", err)
+	}
+	return contains, nil
 }

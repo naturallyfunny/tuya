@@ -1,4 +1,4 @@
-package tuya
+package appaccount
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"go.naturallyfunny.dev/tuya/cloud"
+	"go.naturallyfunny.dev/tuya"
 )
 
 type AppAccount struct {
@@ -19,8 +19,8 @@ type AppAccount struct {
 }
 
 type Device struct {
-	cloud.UserDevice
-	Channels []cloud.Channel `json:"channels"`
+	tuya.UserDevice
+	Channels []tuya.Channel `json:"channels"`
 }
 
 var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
@@ -31,49 +31,49 @@ type AppAccountStore interface {
 	Unlink(ctx context.Context, owner string) error
 }
 
-type AppAccountIoT interface {
-	UserDevices(ctx context.Context, tuyaUID string) ([]cloud.UserDevice, error)
-	DeviceChannelNames(ctx context.Context, deviceID string) ([]cloud.Channel, error)
+type Client interface {
+	UserDevices(ctx context.Context, tuyaUID string) ([]tuya.UserDevice, error)
+	DeviceChannelNames(ctx context.Context, deviceID string) ([]tuya.Channel, error)
 }
 
-type AppAccountClient struct {
-	iot   AppAccountIoT
+type Service struct {
+	iot   Client
 	store AppAccountStore
 }
 
-func NewAppAccountClient(iot AppAccountIoT, store AppAccountStore) *AppAccountClient {
-	return &AppAccountClient{iot: iot, store: store}
+func NewService(iot Client, store AppAccountStore) *Service {
+	return &Service{iot: iot, store: store}
 }
 
-func (c *AppAccountClient) Account(ctx context.Context, owner string) (AppAccount, error) {
-	return c.store.Get(ctx, owner)
+func (s *Service) Account(ctx context.Context, owner string) (AppAccount, error) {
+	return s.store.Get(ctx, owner)
 }
 
-func (c *AppAccountClient) ListDevices(ctx context.Context, owner string) ([]Device, error) {
-	acc, err := c.store.Get(ctx, owner)
+func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, error) {
+	acc, err := s.store.Get(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	found, err := c.iot.UserDevices(ctx, acc.TuyaUID)
+	found, err := s.iot.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return nil, err
 	}
 	devices := make([]Device, len(found))
 	for idx, device := range found {
-		devices[idx] = Device{UserDevice: device, Channels: []cloud.Channel{}}
+		devices[idx] = Device{UserDevice: device, Channels: []tuya.Channel{}}
 	}
-	if err := c.resolveChannelNames(ctx, devices); err != nil {
+	if err := s.resolveChannelNames(ctx, devices); err != nil {
 		return nil, fmt.Errorf("resolve channel names: %w", err)
 	}
 	return devices, nil
 }
 
-func (c *AppAccountClient) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
-	acc, err := c.store.Get(ctx, owner)
+func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
+	acc, err := s.store.Get(ctx, owner)
 	if err != nil {
 		return false, err
 	}
-	devices, err := c.iot.UserDevices(ctx, acc.TuyaUID)
+	devices, err := s.iot.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
 	}
@@ -90,7 +90,7 @@ func isMultiGang(category string) bool {
 	return c == "kg" || strings.HasPrefix(c, "cz")
 }
 
-func (c *AppAccountClient) resolveChannelNames(ctx context.Context, devices []Device) error {
+func (s *Service) resolveChannelNames(ctx context.Context, devices []Device) error {
 	var targets []*Device
 	for idx := range devices {
 		device := &devices[idx]
@@ -108,7 +108,7 @@ func (c *AppAccountClient) resolveChannelNames(ctx context.Context, devices []De
 	)
 	for _, device := range targets {
 		wg.Go(func() {
-			channels, err := c.iot.DeviceChannelNames(ctx, device.ID)
+			channels, err := s.iot.DeviceChannelNames(ctx, device.ID)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("device %s: %w", device.ID, err))

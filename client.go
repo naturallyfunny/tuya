@@ -1,4 +1,4 @@
-package cloud
+package tuya
 
 import (
 	"bytes"
@@ -46,12 +46,13 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	}
 }
 
-type IoT struct {
-	client *Client
+type APIError struct {
+	Code int
+	Msg  string
 }
 
-func NewIoT(c *Client) *IoT {
-	return &IoT{client: c}
+func (e *APIError) Error() string {
+	return fmt.Sprintf("tuya api error %d: %s", e.Code, e.Msg)
 }
 
 type response struct {
@@ -61,15 +62,6 @@ type response struct {
 	Result  json.RawMessage `json:"result"`
 	Code    int             `json:"code"`
 	Msg     string          `json:"msg"`
-}
-
-type APIError struct {
-	Code int
-	Msg  string
-}
-
-func (e *APIError) Error() string {
-	return fmt.Sprintf("tuya api error %d: %s", e.Code, e.Msg)
 }
 
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
@@ -118,4 +110,12 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		return nil, &APIError{Code: tuyaResp.Code, Msg: tuyaResp.Msg}
 	}
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
+}
+
+type IoT struct {
+	client *Client
+}
+
+func NewIoT(c *Client) *IoT {
+	return &IoT{client: c}
 }

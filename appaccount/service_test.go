@@ -1,4 +1,4 @@
-package tuya_test
+package appaccount
 
 import (
 	"context"
@@ -8,21 +8,20 @@ import (
 	"testing"
 
 	"go.naturallyfunny.dev/tuya"
-	"go.naturallyfunny.dev/tuya/cloud"
 )
 
 type fakeStore struct {
-	acc      tuya.AppAccount
+	acc      AppAccount
 	err      error
 	gotOwner string
 }
 
-func (f *fakeStore) Get(_ context.Context, owner string) (tuya.AppAccount, error) {
+func (f *fakeStore) Get(_ context.Context, owner string) (AppAccount, error) {
 	f.gotOwner = owner
 	return f.acc, f.err
 }
 
-func (f *fakeStore) Link(context.Context, string, string) (tuya.AppAccount, error) {
+func (f *fakeStore) Link(context.Context, string, string) (AppAccount, error) {
 	panic("Link not expected in these tests")
 }
 
@@ -31,8 +30,8 @@ func (f *fakeStore) Unlink(context.Context, string) error {
 }
 
 type fakeIoT struct {
-	devices    []cloud.UserDevice
-	channels   map[string][]cloud.Channel
+	devices    []tuya.UserDevice
+	channels   map[string][]tuya.Channel
 	listErr    error
 	channelErr error
 	mu         sync.Mutex
@@ -40,14 +39,14 @@ type fakeIoT struct {
 	channelIDs []string
 }
 
-func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]cloud.UserDevice, error) {
+func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]tuya.UserDevice, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
-	out := make([]cloud.UserDevice, len(f.devices))
+	out := make([]tuya.UserDevice, len(f.devices))
 	copy(out, f.devices)
 	return out, f.listErr
 }
 
-func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]cloud.Channel, error) {
+func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya.Channel, error) {
 	f.mu.Lock()
 	f.channelIDs = append(f.channelIDs, deviceID)
 	f.mu.Unlock()
@@ -59,18 +58,18 @@ func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]clou
 
 func (f *fakeIoT) listCalled() bool { return len(f.listUIDs) > 0 }
 
-func linkedAccount() tuya.AppAccount {
-	return tuya.AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
+func linkedAccount() AppAccount {
+	return AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
-func ownedDevices() []cloud.UserDevice {
-	return []cloud.UserDevice{{ID: "dev-1", Category: "kg"}}
+func ownedDevices() []tuya.UserDevice {
+	return []tuya.UserDevice{{ID: "dev-1", Category: "kg"}}
 }
 
 func TestListDevices(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []cloud.UserDevice{{ID: "dev-1"}}}
-	c := tuya.NewAppAccountClient(iot, store)
+	iot := &fakeIoT{devices: []tuya.UserDevice{{ID: "dev-1"}}}
+	c := NewService(iot, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("ListDevices: unexpected error: %v", err)
@@ -92,22 +91,22 @@ func TestListDevices(t *testing.T) {
 func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
-		devices: []cloud.UserDevice{
+		devices: []tuya.UserDevice{
 			{ID: "switch-1", Category: "kg"},
 			{ID: "outlet-1", Category: "cz"},
 			{ID: "sensor-1", Category: "wsdcg"},
 		},
-		channels: map[string][]cloud.Channel{
+		channels: map[string][]tuya.Channel{
 			"switch-1": {{Identifier: "switch_1", Name: "Kitchen light"}},
 			"outlet-1": {{Identifier: "switch_1", Name: "Fridge"}},
 		},
 	}
-	c := tuya.NewAppAccountClient(iot, store)
+	c := NewService(iot, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("ListDevices: unexpected error: %v", err)
 	}
-	byID := map[string][]cloud.Channel{}
+	byID := map[string][]tuya.Channel{}
 	for _, d := range got {
 		byID[d.ID] = d.Channels
 	}
@@ -128,10 +127,10 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{
-		devices:    []cloud.UserDevice{{ID: "switch-1", Category: "kg"}},
+		devices:    []tuya.UserDevice{{ID: "switch-1", Category: "kg"}},
 		channelErr: errors.New("boom"),
 	}
-	c := tuya.NewAppAccountClient(iot, store)
+	c := NewService(iot, store)
 	_, err := c.ListDevices(context.Background(), "owner-1")
 	if err == nil {
 		t.Fatal("ListDevices: got nil error, want the channel-name failure")
@@ -142,22 +141,22 @@ func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 }
 
 func TestListDevicesAccountNotLinked(t *testing.T) {
-	store := &fakeStore{err: tuya.ErrAccountNotLinked}
+	store := &fakeStore{err: ErrAccountNotLinked}
 	iot := &fakeIoT{}
-	c := tuya.NewAppAccountClient(iot, store)
+	c := NewService(iot, store)
 	_, err := c.ListDevices(context.Background(), "owner-1")
-	if !errors.Is(err, tuya.ErrAccountNotLinked) {
+	if !errors.Is(err, ErrAccountNotLinked) {
 		t.Fatalf("ListDevices: got %v, want ErrAccountNotLinked", err)
 	}
 	if iot.listCalled() {
-		t.Error("ListDevices delegated to AppAccountIoT despite unlinked account")
+		t.Error("ListDevices delegated to Client despite unlinked account")
 	}
 }
 
 func TestHasDevice(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{devices: ownedDevices()}
-	c := tuya.NewAppAccountClient(iot, store)
+	c := NewService(iot, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {
 		t.Fatalf("HasDevice: unexpected error: %v", err)
@@ -175,8 +174,8 @@ func TestHasDevice(t *testing.T) {
 
 func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []cloud.UserDevice{{ID: "someone-elses-device"}}}
-	c := tuya.NewAppAccountClient(iot, store)
+	iot := &fakeIoT{devices: []tuya.UserDevice{{ID: "someone-elses-device"}}}
+	c := NewService(iot, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {
 		t.Fatalf("HasDevice: got error %v, want a plain false", err)
@@ -187,10 +186,10 @@ func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 }
 
 func TestHasDeviceAccountNotLinked(t *testing.T) {
-	store := &fakeStore{err: tuya.ErrAccountNotLinked}
+	store := &fakeStore{err: ErrAccountNotLinked}
 	iot := &fakeIoT{}
-	c := tuya.NewAppAccountClient(iot, store)
-	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, tuya.ErrAccountNotLinked) {
+	c := NewService(iot, store)
+	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, ErrAccountNotLinked) {
 		t.Fatalf("HasDevice: got %v, want ErrAccountNotLinked", err)
 	}
 	if iot.listCalled() {
@@ -202,7 +201,7 @@ func TestHasDeviceSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}
 	iot := &fakeIoT{listErr: sentinel}
-	c := tuya.NewAppAccountClient(iot, store)
+	c := NewService(iot, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("HasDevice: got %v, want wrapped sentinel", err)
@@ -214,7 +213,7 @@ func TestHasDeviceSurfacesListError(t *testing.T) {
 
 func TestAccount(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	c := tuya.NewAppAccountClient(&fakeIoT{}, store)
+	c := NewService(&fakeIoT{}, store)
 	acc, err := c.Account(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("Account: unexpected error: %v", err)

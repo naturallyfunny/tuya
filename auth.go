@@ -1,4 +1,4 @@
-package cloud
+package tuya
 
 import (
 	"context"
@@ -14,15 +14,6 @@ import (
 	"strings"
 	"time"
 )
-
-func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
-	req.Header.Set("client_id", accessID)
-	req.Header.Set("sign", sig.Sign)
-	req.Header.Set("t", sig.Timestamp)
-	req.Header.Set("sign_method", sig.SignMethod)
-	req.Header.Set("access_token", sig.AccessToken)
-	req.Header.Set("nonce", sig.Nonce)
-}
 
 type signature struct {
 	Sign        string
@@ -77,6 +68,15 @@ type token struct {
 	UID          string `json:"uid"`
 }
 
+func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
+	req.Header.Set("client_id", accessID)
+	req.Header.Set("sign", sig.Sign)
+	req.Header.Set("t", sig.Timestamp)
+	req.Header.Set("sign_method", sig.SignMethod)
+	req.Header.Set("access_token", sig.AccessToken)
+	req.Header.Set("nonce", sig.Nonce)
+}
+
 func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	const path = "/v1.0/token?grant_type=1"
 	fullURL := c.baseURL + path
@@ -125,17 +125,17 @@ func (c *Client) updateToken(ctx context.Context) error {
 	return nil
 }
 
+func (c *Client) forceRefreshToken(ctx context.Context) error {
+	c.tokenLock.Lock()
+	defer c.tokenLock.Unlock()
+	return c.updateToken(ctx)
+}
+
 func (c *Client) ensureValidToken(ctx context.Context) error {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
 	if c.token != nil && c.token.ExpireTime > time.Now().Unix() {
 		return nil
 	}
-	return c.updateToken(ctx)
-}
-
-func (c *Client) forceRefreshToken(ctx context.Context) error {
-	c.tokenLock.Lock()
-	defer c.tokenLock.Unlock()
 	return c.updateToken(ctx)
 }
