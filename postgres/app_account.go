@@ -44,7 +44,7 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAc
 		panic("postgres: NewAppAccountStore called with nil Querier")
 	}
 	s := &AppAccountStore{db: db}
-	if err := prepareSchema(ctx, db, opts, "app_account", s.validateSchema); err != nil {
+	if err := prepareSchema(ctx, db, opts, "appaccount", s.validateSchema); err != nil {
 		return nil, err
 	}
 	return s, nil

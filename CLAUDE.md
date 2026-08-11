@@ -26,7 +26,7 @@ appaccount/     Pintu app-account utuh: tipe, error, Store + Client interface, S
 spatial/        Pintu spatial, pola sama: resolve → assertSpaceOwned → delegate.
                 ID 0 = space owner, bukan top level project.
 postgres/       app_account.go (+ Querier, Option/WithAutoMigrate, migrate), spatial.go,
-                migrations/app_account/ + migrations/spatial/ (//go:embed, satu folder per pintu)
+                migrations/appaccount/ + migrations/spatial/ (//go:embed, satu folder per pintu)
 firestore/      app_account.go (+ Option/WithCollection, validateOwner), spatial.go. Satu dokumen
                 per owner (doc ID = owner), soft-delete, Link/Unlink transactional.
 ```
