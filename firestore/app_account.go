@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/appaccount"
 )
 
 const DefaultAppAccountCollection = "tuya_app_accounts"
@@ -23,8 +23,8 @@ type accountDoc struct {
 	DeletedAt *time.Time `firestore:"deleted_at"`
 }
 
-func (d accountDoc) account(owner string) tuya.AppAccount {
-	return tuya.AppAccount{
+func (d accountDoc) account(owner string) appaccount.Account {
+	return appaccount.Account{
 		Owner:     owner,
 		TuyaUID:   d.TuyaUID,
 		CreatedAt: d.CreatedAt,
@@ -68,34 +68,34 @@ func NewAppAccountStore(client *firestore.Client, opts ...Option) *AppAccountSto
 	}
 }
 
-func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.AppAccount{}, err
+		return appaccount.Account{}, err
 	}
 	snap, err := ref.Get(ctx)
 	if status.Code(err) == codes.NotFound {
-		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
+		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("get account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("get account: %w", err)
 	}
 	var doc accountDoc
 	if err := snap.DataTo(&doc); err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("get account: decode %q: %w", owner, err)
+		return appaccount.Account{}, fmt.Errorf("get account: decode %q: %w", owner, err)
 	}
 	if doc.DeletedAt != nil {
-		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
+		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
 	return doc.account(owner), nil
 }
 
-func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appaccount.Account, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.AppAccount{}, err
+		return appaccount.Account{}, err
 	}
-	var acc tuya.AppAccount
+	var acc appaccount.Account
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		now := time.Now().UTC()
 		doc := accountDoc{TuyaUID: tuyaUID, CreatedAt: now, UpdatedAt: now}
@@ -115,7 +115,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (tuya
 		return tx.Set(ref, doc)
 	})
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
 	}
 	return acc, nil
 }
@@ -128,7 +128,7 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(ref)
 		if status.Code(err) == codes.NotFound {
-			return tuya.ErrAccountNotLinked
+			return appaccount.ErrNotLinked
 		}
 		if err != nil {
 			return err
@@ -138,7 +138,7 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 			return fmt.Errorf("decode %q: %w", owner, err)
 		}
 		if doc.DeletedAt != nil {
-			return tuya.ErrAccountNotLinked
+			return appaccount.ErrNotLinked
 		}
 		now := time.Now().UTC()
 		return tx.Update(ref, []firestore.Update{
@@ -146,8 +146,8 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 			{Path: "updated_at", Value: now},
 		})
 	})
-	if errors.Is(err, tuya.ErrAccountNotLinked) {
-		return tuya.ErrAccountNotLinked
+	if errors.Is(err, appaccount.ErrNotLinked) {
+		return appaccount.ErrNotLinked
 	}
 	if err != nil {
 		return fmt.Errorf("unlink account: %w", err)
@@ -178,4 +178,4 @@ func validateOwner(owner string) error {
 	return nil
 }
 
-var _ tuya.AppAccountStore = (*AppAccountStore)(nil)
+var _ appaccount.Store = (*AppAccountStore)(nil)

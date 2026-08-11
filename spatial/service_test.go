@@ -126,23 +126,23 @@ func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{contains: map[int64]bool{}}
 	door := newSpaceDoor(t, iot)
 	ctx := context.Background()
-	if _, err := door.Space(ctx, "owner-1", foreign); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("Space error = %v, want ErrSpaceNotOwned", err)
+	if _, err := door.Space(ctx, "owner-1", foreign); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("Space error = %v, want ErrNotOwned", err)
 	}
-	if err := door.ModifySpace(ctx, "owner-1", foreign, "Renamed", ""); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("ModifySpace error = %v, want ErrSpaceNotOwned", err)
+	if err := door.ModifySpace(ctx, "owner-1", foreign, "Renamed", ""); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("ModifySpace error = %v, want ErrNotOwned", err)
 	}
-	if err := door.DeleteSpace(ctx, "owner-1", foreign); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("DeleteSpace error = %v, want ErrSpaceNotOwned", err)
+	if err := door.DeleteSpace(ctx, "owner-1", foreign); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("DeleteSpace error = %v, want ErrNotOwned", err)
 	}
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", foreign, true, tuya.Page{}); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotOwned", err)
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", foreign, true, tuya.Page{}); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("ChildSpaces error = %v, want ErrNotOwned", err)
 	}
-	if _, err := door.CreateSpace(ctx, "owner-1", "Room 2", foreign, ""); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("CreateSpace error = %v, want ErrSpaceNotOwned", err)
+	if _, err := door.CreateSpace(ctx, "owner-1", "Room 2", foreign, ""); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("CreateSpace error = %v, want ErrNotOwned", err)
 	}
-	if _, _, err := door.SpaceResources(ctx, "owner-1", foreign, false, tuya.Page{}); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("SpaceResources error = %v, want ErrSpaceNotOwned", err)
+	if _, _, err := door.SpaceResources(ctx, "owner-1", foreign, false, tuya.Page{}); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("SpaceResources error = %v, want ErrNotOwned", err)
 	}
 	if iot.queried != 0 || iot.modified != 0 || iot.deleted != 0 || len(iot.listed) != 0 || iot.createdParent != 0 || iot.resourcesOf != 0 {
 		t.Errorf("an operation ran past the guard: %+v", iot)
@@ -249,10 +249,10 @@ func TestContainsSpace(t *testing.T) {
 
 func TestSpaceDoorStopsWhenTheOwnerHasNoSpace(t *testing.T) {
 	iot := &fakeSpaceIoT{}
-	store := &fakeSpaceStore{err: ErrSpaceNotLinked}
+	store := &fakeSpaceStore{err: ErrNotLinked}
 	door := NewService(iot, store)
-	if _, err := door.Space(context.Background(), "owner-1", insideRoom); !errors.Is(err, ErrSpaceNotLinked) {
-		t.Errorf("Space error = %v, want ErrSpaceNotLinked", err)
+	if _, err := door.Space(context.Background(), "owner-1", insideRoom); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("Space error = %v, want ErrNotLinked", err)
 	}
 	if len(iot.relationQueries) != 0 {
 		t.Errorf("asked Tuya %d times without a linked space, want none", len(iot.relationQueries))
@@ -289,14 +289,14 @@ func TestZeroSpaceIDMeansTheOwnersSpace(t *testing.T) {
 func TestTheDoorNeverListsTheWholeProject(t *testing.T) {
 	ctx := context.Background()
 	unlinked := &fakeSpaceIoT{}
-	door := NewService(unlinked, &fakeSpaceStore{err: ErrSpaceNotLinked})
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, tuya.Page{}); !errors.Is(err, ErrSpaceNotLinked) {
-		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotLinked", err)
+	door := NewService(unlinked, &fakeSpaceStore{err: ErrNotLinked})
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, tuya.Page{}); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("ChildSpaces error = %v, want ErrNotLinked", err)
 	}
 	zeroLink := &fakeSpaceIoT{}
 	door = NewService(zeroLink, &fakeSpaceStore{space: Space{Owner: "owner-1"}})
-	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, tuya.Page{}); !errors.Is(err, ErrSpaceNotLinked) {
-		t.Errorf("ChildSpaces error = %v, want ErrSpaceNotLinked for a zero linked space", err)
+	if _, _, err := door.ChildSpaces(ctx, "owner-1", 0, true, tuya.Page{}); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("ChildSpaces error = %v, want ErrNotLinked for a zero linked space", err)
 	}
 	for name, iot := range map[string]*fakeSpaceIoT{"unlinked owner": unlinked, "zero linked space": zeroLink} {
 		if len(iot.listed) != 0 {
@@ -323,8 +323,8 @@ func TestTheOwnersSpaceCannotBeDeletedThroughTheDoor(t *testing.T) {
 func TestASpaceOutsideTheProjectIsRefusedAsUnowned(t *testing.T) {
 	iot := &fakeSpaceIoT{containsErr: &tuya.APIError{Code: CodeNoSpacePermission, Msg: "No space permission"}}
 	door := newSpaceDoor(t, iot)
-	if _, err := door.Space(context.Background(), "owner-1", foreign); !errors.Is(err, ErrSpaceNotOwned) {
-		t.Errorf("Space error = %v, want ErrSpaceNotOwned", err)
+	if _, err := door.Space(context.Background(), "owner-1", foreign); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("Space error = %v, want ErrNotOwned", err)
 	}
 	if iot.queried != 0 {
 		t.Errorf("queried space %d past the guard", iot.queried)

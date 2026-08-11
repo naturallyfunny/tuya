@@ -17,12 +17,12 @@ type Space struct {
 }
 
 var (
-	ErrSpaceNotLinked      = errors.New("tuya: no space linked to owner")
-	ErrSpaceNotOwned       = errors.New("tuya: space does not belong to owner")
+	ErrNotLinked           = errors.New("tuya: no space linked to owner")
+	ErrNotOwned            = errors.New("tuya: space does not belong to owner")
 	ErrOwnerSpaceProtected = errors.New("tuya: refusing to delete the space the owner is linked to")
 )
 
-type SpaceStore interface {
+type Store interface {
 	Get(ctx context.Context, owner string) (Space, error)
 	Link(ctx context.Context, owner string, spaceID int64) (Space, error)
 	Unlink(ctx context.Context, owner string) error
@@ -40,10 +40,10 @@ type Client interface {
 
 type Service struct {
 	iot   Client
-	store SpaceStore
+	store Store
 }
 
-func NewService(iot Client, store SpaceStore) *Service {
+func NewService(iot Client, store Store) *Service {
 	return &Service{iot: iot, store: store}
 }
 
@@ -126,7 +126,7 @@ func (s *Service) ContainsSpace(ctx context.Context, owner string, id int64) (bo
 		return false, err
 	}
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
-		if errors.Is(err, ErrSpaceNotOwned) {
+		if errors.Is(err, ErrNotOwned) {
 			return false, nil
 		}
 		return false, err
@@ -169,7 +169,7 @@ func (s *Service) ownerSpace(ctx context.Context, owner string) (int64, error) {
 		return 0, err
 	}
 	if space.SpaceID == 0 {
-		return 0, ErrSpaceNotLinked
+		return 0, ErrNotLinked
 	}
 	return space.SpaceID, nil
 }
@@ -195,12 +195,12 @@ func (s *Service) assertSpaceOwned(ctx context.Context, ownerSpace, target int64
 	if err != nil {
 		var apiErr *tuya.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == CodeNoSpacePermission {
-			return ErrSpaceNotOwned
+			return ErrNotOwned
 		}
 		return fmt.Errorf("verify space ownership: %w", err)
 	}
 	if !contains {
-		return ErrSpaceNotOwned
+		return ErrNotOwned
 	}
 	return nil
 }

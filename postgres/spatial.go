@@ -7,45 +7,45 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/spatial"
 )
 
 type SpaceStore struct {
 	db Querier
 }
 
-var _ tuya.SpaceStore = (*SpaceStore)(nil)
+var _ spatial.Store = (*SpaceStore)(nil)
 
 func NewSpaceStore(ctx context.Context, db Querier, opts ...Option) (*SpaceStore, error) {
 	if db == nil {
 		panic("postgres: NewSpaceStore called with nil Querier")
 	}
 	s := &SpaceStore{db: db}
-	if err := prepareSchema(ctx, db, opts, s.validateSchema); err != nil {
+	if err := prepareSchema(ctx, db, opts, "spatial", s.validateSchema); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (spatial.Space, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT owner, space_id, created_at, updated_at FROM tuya_spaces WHERE owner = $1 AND deleted_at IS NULL`,
 		owner,
 	)
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("get space: %w", err)
+		return spatial.Space{}, fmt.Errorf("get space: %w", err)
 	}
 	space, err := pgx.CollectOneRow(rows, scanSpace)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tuya.Space{}, tuya.ErrSpaceNotLinked
+		return spatial.Space{}, spatial.ErrNotLinked
 	}
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("get space: %w", err)
+		return spatial.Space{}, fmt.Errorf("get space: %w", err)
 	}
 	return space, nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuya.Space, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (spatial.Space, error) {
 	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_spaces (owner, space_id)
 		 VALUES ($1, $2)
@@ -55,11 +55,11 @@ func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuy
 		owner, spaceID,
 	)
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("link space: %w", err)
+		return spatial.Space{}, fmt.Errorf("link space: %w", err)
 	}
 	space, err := pgx.CollectOneRow(rows, scanSpace)
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("link space: %w", err)
+		return spatial.Space{}, fmt.Errorf("link space: %w", err)
 	}
 	return space, nil
 }
@@ -75,15 +75,15 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 		return fmt.Errorf("unlink space: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return tuya.ErrSpaceNotLinked
+		return spatial.ErrNotLinked
 	}
 	return nil
 }
 
-func scanSpace(row pgx.CollectableRow) (tuya.Space, error) {
-	var space tuya.Space
+func scanSpace(row pgx.CollectableRow) (spatial.Space, error) {
+	var space spatial.Space
 	if err := row.Scan(&space.Owner, &space.SpaceID, &space.CreatedAt, &space.UpdatedAt); err != nil {
-		return tuya.Space{}, err
+		return spatial.Space{}, err
 	}
 	return space, nil
 }

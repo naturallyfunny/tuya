@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/spatial"
 )
 
 const DefaultSpaceCollection = "tuya_spaces"
@@ -22,8 +22,8 @@ type spaceDoc struct {
 	DeletedAt *time.Time `firestore:"deleted_at"`
 }
 
-func (d spaceDoc) space(owner string) tuya.Space {
-	return tuya.Space{
+func (d spaceDoc) space(owner string) spatial.Space {
+	return spatial.Space{
 		Owner:     owner,
 		SpaceID:   d.SpaceID,
 		CreatedAt: d.CreatedAt,
@@ -36,7 +36,7 @@ type SpaceStore struct {
 	collection string
 }
 
-var _ tuya.SpaceStore = (*SpaceStore)(nil)
+var _ spatial.Store = (*SpaceStore)(nil)
 
 func NewSpaceStore(client *firestore.Client, opts ...Option) *SpaceStore {
 	if client == nil {
@@ -48,37 +48,37 @@ func NewSpaceStore(client *firestore.Client, opts ...Option) *SpaceStore {
 	}
 }
 
-func (s *SpaceStore) Get(ctx context.Context, owner string) (tuya.Space, error) {
+func (s *SpaceStore) Get(ctx context.Context, owner string) (spatial.Space, error) {
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.Space{}, err
+		return spatial.Space{}, err
 	}
 	snap, err := ref.Get(ctx)
 	if status.Code(err) == codes.NotFound {
-		return tuya.Space{}, tuya.ErrSpaceNotLinked
+		return spatial.Space{}, spatial.ErrNotLinked
 	}
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("get space: %w", err)
+		return spatial.Space{}, fmt.Errorf("get space: %w", err)
 	}
 	var doc spaceDoc
 	if err := snap.DataTo(&doc); err != nil {
-		return tuya.Space{}, fmt.Errorf("get space: decode %q: %w", owner, err)
+		return spatial.Space{}, fmt.Errorf("get space: decode %q: %w", owner, err)
 	}
 	if doc.DeletedAt != nil {
-		return tuya.Space{}, tuya.ErrSpaceNotLinked
+		return spatial.Space{}, spatial.ErrNotLinked
 	}
 	return doc.space(owner), nil
 }
 
-func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuya.Space, error) {
+func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (spatial.Space, error) {
 	if spaceID == 0 {
-		return tuya.Space{}, errors.New("firestore: space id is zero")
+		return spatial.Space{}, errors.New("firestore: space id is zero")
 	}
 	ref, err := s.doc(owner)
 	if err != nil {
-		return tuya.Space{}, err
+		return spatial.Space{}, err
 	}
-	var space tuya.Space
+	var space spatial.Space
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		now := time.Now().UTC()
 		doc := spaceDoc{SpaceID: spaceID, CreatedAt: now, UpdatedAt: now}
@@ -98,7 +98,7 @@ func (s *SpaceStore) Link(ctx context.Context, owner string, spaceID int64) (tuy
 		return tx.Set(ref, doc)
 	})
 	if err != nil {
-		return tuya.Space{}, fmt.Errorf("link space: %w", err)
+		return spatial.Space{}, fmt.Errorf("link space: %w", err)
 	}
 	return space, nil
 }
@@ -111,7 +111,7 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(ref)
 		if status.Code(err) == codes.NotFound {
-			return tuya.ErrSpaceNotLinked
+			return spatial.ErrNotLinked
 		}
 		if err != nil {
 			return err
@@ -121,7 +121,7 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 			return fmt.Errorf("decode %q: %w", owner, err)
 		}
 		if doc.DeletedAt != nil {
-			return tuya.ErrSpaceNotLinked
+			return spatial.ErrNotLinked
 		}
 		now := time.Now().UTC()
 		return tx.Update(ref, []firestore.Update{
@@ -129,8 +129,8 @@ func (s *SpaceStore) Unlink(ctx context.Context, owner string) error {
 			{Path: "updated_at", Value: now},
 		})
 	})
-	if errors.Is(err, tuya.ErrSpaceNotLinked) {
-		return tuya.ErrSpaceNotLinked
+	if errors.Is(err, spatial.ErrNotLinked) {
+		return spatial.ErrNotLinked
 	}
 	if err != nil {
 		return fmt.Errorf("unlink space: %w", err)

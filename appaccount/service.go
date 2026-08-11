@@ -11,7 +11,7 @@ import (
 	"go.naturallyfunny.dev/tuya"
 )
 
-type AppAccount struct {
+type Account struct {
 	Owner     string    `json:"owner"`
 	TuyaUID   string    `json:"tuya_uid"`
 	CreatedAt time.Time `json:"created_at"`
@@ -23,11 +23,11 @@ type Device struct {
 	Channels []tuya.Channel `json:"channels"`
 }
 
-var ErrAccountNotLinked = errors.New("tuya: no tuya account linked to owner")
+var ErrNotLinked = errors.New("tuya: no tuya account linked to owner")
 
-type AppAccountStore interface {
-	Get(ctx context.Context, owner string) (AppAccount, error)
-	Link(ctx context.Context, owner, tuyaUID string) (AppAccount, error)
+type Store interface {
+	Get(ctx context.Context, owner string) (Account, error)
+	Link(ctx context.Context, owner, tuyaUID string) (Account, error)
 	Unlink(ctx context.Context, owner string) error
 }
 
@@ -38,14 +38,14 @@ type Client interface {
 
 type Service struct {
 	iot   Client
-	store AppAccountStore
+	store Store
 }
 
-func NewService(iot Client, store AppAccountStore) *Service {
+func NewService(iot Client, store Store) *Service {
 	return &Service{iot: iot, store: store}
 }
 
-func (s *Service) Account(ctx context.Context, owner string) (AppAccount, error) {
+func (s *Service) Account(ctx context.Context, owner string) (Account, error) {
 	return s.store.Get(ctx, owner)
 }
 

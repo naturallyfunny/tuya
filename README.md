@@ -345,6 +345,11 @@ are tracked in `tuya_schema_migrations`. `WithAutoMigrate()` applies pending mig
 startup. Without it, `NewAppAccountStore` validates the schema exists and fails fast if the
 consumer forgot to migrate.
 
+Each door owns its own migration directory — `migrations/app_account/`, `migrations/spatial/` —
+and each store runs only its own. Sequence numbers restart per door, and the version recorded in
+`tuya_schema_migrations` is the door-qualified path (`app_account/000001_init.up.sql`). A consumer
+that only uses the spatial door never gets `tuya_app_accounts` created behind its back.
+
 ## Design rationale
 
 The decisions below are deliberate, and several run *against* a generic idiom on purpose.

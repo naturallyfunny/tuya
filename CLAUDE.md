@@ -12,23 +12,22 @@ dengan brute force lalu menagihkannya diam-diam.
 
 ## Struktur
 
-Root dipecah **per pintu**, bukan per jenis deklarasi. Dependency acyclic: **postgres → tuya →
-cloud**. Nama file store = nama pintunya, bukan `store.go`. Domain baru → file baru; method `IoT`
-ditulis di file domainnya, bukan di client.go. **Tidak ada file tanpa pintu di root**: interface
-IoT tiap pintu berprefiks nama pintunya dan tinggal di file pintunya.
+Root = layer Tuya murni: trusted, tanpa konsep owner. Tiap pintu owner-scoped punya package sendiri,
+adapter store dipecah per backend. Dependency acyclic: **postgres/firestore → pintu → root**. Nama
+file = nama pintunya, bukan `store.go`/`service.go` polos. Domain baru → file baru; method `IoT`
+ditulis di file domainnya, bukan di client.go.
 
 ```
-app_account.go  Pintu app-account utuh: tipe, error, store + AppAccountIoT interface, client,
+client.go       Transport: token cache/refresh, HMAC-SHA256, Do + retry-on-1010, + IoT facade.
+auth.go         Signing (token-request vs business-request beda) + token lifecycle.
+device.go       Tipe domain + method 1:1 endpoint. space.go idem (helper satu-satunya: listQuery).
+appaccount/     Pintu app-account utuh: tipe, error, Store + Client interface, Service,
                 + isMultiGang (kategori kg/cz*) dan resolveChannelNames (fan-out + errors.Join).
-space.go        Pintu spatial utuh, pola sama: resolve → assertSpaceOwned → delegate.
+spatial/        Pintu spatial, pola sama: resolve → assertSpaceOwned → delegate.
                 ID 0 = space owner, bukan top level project.
-cloud/          Layer Tuya murni, trusted, tanpa konsep owner. client.go: transport (token
-                cache/refresh, HMAC-SHA256, Do + retry-on-1010) + IoT facade. auth.go: signing
-                (token-request vs business-request beda) + token lifecycle. device.go & space.go:
-                tipe domain + method 1:1 endpoint (helper satu-satunya: listQuery).
-postgres/       app_account.go (+ Querier, Option/WithAutoMigrate, migrate), space.go, migrations/
-                (//go:embed: 000001 tuya_app_accounts, 000002 tuya_spaces)
-firestore/      app_account.go (+ Option/WithCollection, validateOwner), space.go. Satu dokumen
+postgres/       app_account.go (+ Querier, Option/WithAutoMigrate, migrate), spatial.go,
+                migrations/app_account/ + migrations/spatial/ (//go:embed, satu folder per pintu)
+firestore/      app_account.go (+ Option/WithCollection, validateOwner), spatial.go. Satu dokumen
                 per owner (doc ID = owner), soft-delete, Link/Unlink transactional.
 ```
 
@@ -60,14 +59,14 @@ ok, err = hotel.ContainsDevice(ctx, owner, deviceID) // mahal, lihat Design Deci
 
 ## Region & Migrations
 
-`baseURL` di-inject saat `cloud.New()`: `openapi.tuyaus.com` (W America), `openapi-ueaz.tuyaus.com`
+`baseURL` di-inject saat `tuya.New()`: `openapi.tuyaus.com` (W America), `openapi-ueaz.tuyaus.com`
 (E America), `openapi.tuyaeu.com` (C Europe), `openapi-weaz.tuyaeu.com` (W Europe),
 `openapi.tuyacn.com` (China), `openapi.tuyain.com` (India), **`openapi-sg.iotbing.com`** (Singapore
 — domainnya beda sendiri). Salah data center tetap bisa terbitkan token, lalu semua endpoint isi
 ditolak `28841107 "data center is suspended"` — gejalanya mirip kredensial mati.
-Migration runner custom, bukan `golang-migrate`. `000N_deskripsi.up.sql`/`.down.sql`, hanya `.up.sql`
-yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement wajib `IF NOT EXISTS`/
-`IF EXISTS`. Jangan pernah edit migration yang sudah di-commit.
+Migration runner custom, bukan `golang-migrate`. `migrations/<pintu>/000N_deskripsi.up.sql`/`.down.sql`,
+hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, wajib `IF NOT EXISTS`/
+`IF EXISTS`, jangan pernah edit yang sudah di-commit. **Tiap store cuma menaikkan migrasi pintunya.**
 
 ## Design Decisions — yang mudah "dibersihkan" lalu rusak diam-diam
 
@@ -130,20 +129,21 @@ yang dieksekusi, version tracking di `tuya_schema_migrations`, semua statement w
    berhenti di situ, plus deteksi cursor macet, plus cap.
 5. **`relation` transitif** (`relation(root,cucu)=true`) jadi `assertSpaceOwned` sah; tapi
    **`relation(X,X)`=false**, jadi short-circuit `target == root` itu syarat kebenaran — tanpa itu
-   owner ditolak dari space-nya sendiri. Space project lain **error** `40001900` → `ErrSpaceNotOwned`.
+   owner ditolak dari space-nya sendiri. Space project lain **error** `40001900` → `spatial.ErrNotOwned`.
 6. **Query param wajib urut ASCII**, kalau tidak `1004 sign invalid`. Semua query dibangun lewat
    `url.Values.Encode()` yang mengurutkan sendiri — jangan merakit query string dengan tangan.
 
 ## Conventions
 
-- `cloud.New(...)` → `*cloud.Client`; `cloud.NewIoT(c)` → `*cloud.IoT`; `tuya.NewAppAccountClient` /
-  `tuya.NewSpaceClient` terima `iot` sebagai interface yang didefinisikan di root, bukan implementor
-- Nama pintu & store = nama model device Tuya, jangan `Client`/`Store` polos. Penjawab kepemilikan
-  `(bool, error)` dan namanya kata kerja bertanya — bukan `AssertX`/`MustX`.
-- `tuya.Space` sengaja senama dengan `cloud.Space`, `postgres.AppAccountStore` dengan
-  `tuya.AppAccountStore` — selalu ada kualifikasi package. `tuya.Device` embed `cloud.UserDevice`.
-- Adapter punya `var _ tuya.AppAccountStore = (*AppAccountStore)(nil)` supaya drift ketahuan saat
-  compile; konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` menaikkan
-  seluruh schema, dipanggil dari store mana pun. Kolom tetap `text`/`bigint`, tanpa konversi.
-- Empat package: root `tuya` + `cloud/` + `postgres/` + `firestore/`, tidak ada `pkg/`. Conventional
-  commits: `feat:`, `fix:`, `chore(migrate):` dst
+- `tuya.New(...)` → `*tuya.Client`; `tuya.NewIoT(c)` → `*tuya.IoT`; `NewService(iot, store)` tiap pintu
+  terima `iot` sebagai interface lokal, bukan implementor. `spatial.Space` sengaja senama `tuya.Space`.
+- Nama package pintu = nama model device Tuya; di dalamnya nama tidak mengulang package-nya
+  (`appaccount.Account`/`.Store`/`.ErrNotLinked`), tapi adapter tetap `AppAccountStore`/`SpaceStore`
+  karena satu package menampung dua store. Penjawab kepemilikan `(bool, error)` dan namanya kata
+  kerja bertanya — bukan `AssertX`/`MustX`.
+- Adapter punya `var _ appaccount.Store = (*AppAccountStore)(nil)` supaya drift ketahuan saat
+  compile; konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` cuma menaikkan
+  migrasi pintunya sendiri. Kolom tetap `text`/`bigint`, tanpa konversi.
+- Adapter dipecah **per backend**, bukan per pintu — `appaccount/postgres` + `spatial/postgres` = dua
+  package senama yang memaksa alias di tiap impor, dan `Querier`/`Option`/`migrate` kehilangan rumahnya.
+- Conventional commits: `feat:`, `fix:`, `chore(migrate):` dst; tidak ada `pkg/`.

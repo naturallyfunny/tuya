@@ -11,17 +11,17 @@ import (
 )
 
 type fakeStore struct {
-	acc      AppAccount
+	acc      Account
 	err      error
 	gotOwner string
 }
 
-func (f *fakeStore) Get(_ context.Context, owner string) (AppAccount, error) {
+func (f *fakeStore) Get(_ context.Context, owner string) (Account, error) {
 	f.gotOwner = owner
 	return f.acc, f.err
 }
 
-func (f *fakeStore) Link(context.Context, string, string) (AppAccount, error) {
+func (f *fakeStore) Link(context.Context, string, string) (Account, error) {
 	panic("Link not expected in these tests")
 }
 
@@ -58,8 +58,8 @@ func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya
 
 func (f *fakeIoT) listCalled() bool { return len(f.listUIDs) > 0 }
 
-func linkedAccount() AppAccount {
-	return AppAccount{Owner: "owner-1", TuyaUID: "uid-1"}
+func linkedAccount() Account {
+	return Account{Owner: "owner-1", TuyaUID: "uid-1"}
 }
 
 func ownedDevices() []tuya.UserDevice {
@@ -141,12 +141,12 @@ func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 }
 
 func TestListDevicesAccountNotLinked(t *testing.T) {
-	store := &fakeStore{err: ErrAccountNotLinked}
+	store := &fakeStore{err: ErrNotLinked}
 	iot := &fakeIoT{}
 	c := NewService(iot, store)
 	_, err := c.ListDevices(context.Background(), "owner-1")
-	if !errors.Is(err, ErrAccountNotLinked) {
-		t.Fatalf("ListDevices: got %v, want ErrAccountNotLinked", err)
+	if !errors.Is(err, ErrNotLinked) {
+		t.Fatalf("ListDevices: got %v, want ErrNotLinked", err)
 	}
 	if iot.listCalled() {
 		t.Error("ListDevices delegated to Client despite unlinked account")
@@ -186,11 +186,11 @@ func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 }
 
 func TestHasDeviceAccountNotLinked(t *testing.T) {
-	store := &fakeStore{err: ErrAccountNotLinked}
+	store := &fakeStore{err: ErrNotLinked}
 	iot := &fakeIoT{}
 	c := NewService(iot, store)
-	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, ErrAccountNotLinked) {
-		t.Fatalf("HasDevice: got %v, want ErrAccountNotLinked", err)
+	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, ErrNotLinked) {
+		t.Fatalf("HasDevice: got %v, want ErrNotLinked", err)
 	}
 	if iot.listCalled() {
 		t.Error("HasDevice listed devices despite an unlinked account")

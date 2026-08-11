@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"go.naturallyfunny.dev/tuya"
+	"go.naturallyfunny.dev/tuya/appaccount"
 )
 
 //go:embed migrations
@@ -25,7 +25,7 @@ type AppAccountStore struct {
 	db Querier
 }
 
-var _ tuya.AppAccountStore = (*AppAccountStore)(nil)
+var _ appaccount.Store = (*AppAccountStore)(nil)
 
 type options struct {
 	autoMigrate bool
@@ -44,19 +44,19 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAc
 		panic("postgres: NewAppAccountStore called with nil Querier")
 	}
 	s := &AppAccountStore{db: db}
-	if err := prepareSchema(ctx, db, opts, s.validateSchema); err != nil {
+	if err := prepareSchema(ctx, db, opts, "app_account", s.validateSchema); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func prepareSchema(ctx context.Context, db Querier, opts []Option, validate func(context.Context) error) error {
+func prepareSchema(ctx context.Context, db Querier, opts []Option, door string, validate func(context.Context) error) error {
 	var cfg options
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	if cfg.autoMigrate {
-		if err := migrate(ctx, db); err != nil {
+		if err := migrate(ctx, db, door); err != nil {
 			return fmt.Errorf("postgres: auto-migrate: %w", err)
 		}
 		return nil
@@ -64,25 +64,25 @@ func prepareSchema(ctx context.Context, db Querier, opts []Option, validate func
 	return validate(ctx)
 }
 
-func (s *AppAccountStore) Get(ctx context.Context, owner string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner = $1 AND deleted_at IS NULL`,
 		owner,
 	)
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("get account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("get account: %w", err)
 	}
 	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tuya.AppAccount{}, tuya.ErrAccountNotLinked
+		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("get account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("get account: %w", err)
 	}
 	return acc, nil
 }
 
-func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string) (tuya.AppAccount, error) {
+func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string) (appaccount.Account, error) {
 	rows, err := s.db.Query(ctx,
 		`INSERT INTO tuya_app_accounts (owner, tuya_uid)
 		 VALUES ($1, $2)
@@ -92,11 +92,11 @@ func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string
 		owner, tuyaUID,
 	)
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
 	}
 	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
 	if err != nil {
-		return tuya.AppAccount{}, fmt.Errorf("link account: %w", err)
+		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
 	}
 	return acc, nil
 }
@@ -112,20 +112,20 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 		return fmt.Errorf("unlink account: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return tuya.ErrAccountNotLinked
+		return appaccount.ErrNotLinked
 	}
 	return nil
 }
 
-func scanAppAccount(row pgx.CollectableRow) (tuya.AppAccount, error) {
-	var acc tuya.AppAccount
+func scanAppAccount(row pgx.CollectableRow) (appaccount.Account, error) {
+	var acc appaccount.Account
 	if err := row.Scan(&acc.Owner, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
-		return tuya.AppAccount{}, err
+		return appaccount.Account{}, err
 	}
 	return acc, nil
 }
 
-func migrate(ctx context.Context, db Querier) error {
+func migrate(ctx context.Context, db Querier, door string) error {
 	if _, err := db.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS tuya_schema_migrations (
 			version    TEXT        PRIMARY KEY,
@@ -134,39 +134,40 @@ func migrate(ctx context.Context, db Querier) error {
 	`); err != nil {
 		return fmt.Errorf("postgres: create migrations table: %w", err)
 	}
-	entries, err := migrationFiles.ReadDir("migrations")
+	dir := "migrations/" + door
+	entries, err := migrationFiles.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("postgres: read migrations: %w", err)
+		return fmt.Errorf("postgres: read %s: %w", dir, err)
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".up.sql") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
 			continue
 		}
+		version := door + "/" + entry.Name()
 		rows, err := db.Query(ctx,
-			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, name,
+			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, version,
 		)
 		if err != nil {
-			return fmt.Errorf("postgres: check migration %s: %w", name, err)
+			return fmt.Errorf("postgres: check migration %s: %w", version, err)
 		}
 		applied, err := pgx.CollectOneRow(rows, pgx.RowTo[bool])
 		if err != nil {
-			return fmt.Errorf("postgres: check migration %s: %w", name, err)
+			return fmt.Errorf("postgres: check migration %s: %w", version, err)
 		}
 		if applied {
 			continue
 		}
-		content, err := migrationFiles.ReadFile("migrations/" + name)
+		content, err := migrationFiles.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
-			return fmt.Errorf("postgres: read %s: %w", name, err)
+			return fmt.Errorf("postgres: read %s: %w", version, err)
 		}
 		if _, err := db.Exec(ctx, string(content)); err != nil {
-			return fmt.Errorf("postgres: execute %s: %w", name, err)
+			return fmt.Errorf("postgres: execute %s: %w", version, err)
 		}
 		if _, err := db.Exec(ctx,
-			`INSERT INTO tuya_schema_migrations (version) VALUES ($1)`, name,
+			`INSERT INTO tuya_schema_migrations (version) VALUES ($1)`, version,
 		); err != nil {
-			return fmt.Errorf("postgres: record migration %s: %w", name, err)
+			return fmt.Errorf("postgres: record migration %s: %w", version, err)
 		}
 	}
 	return nil
