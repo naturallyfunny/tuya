@@ -1,3 +1,6 @@
+// Package tuya is a signed client for the Tuya Cloud OpenAPI: a transport
+// (Client) that handles token lifecycle and HMAC-SHA256 signing, plus an IoT
+// facade whose methods are one-to-one with Tuya device and space endpoints.
 package tuya
 
 import (
