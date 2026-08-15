@@ -3,8 +3,8 @@ package appaccount
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
 	"go.naturallyfunny.dev/tuya"
@@ -34,7 +34,6 @@ type fakeClient struct {
 	channels   map[string][]tuya.Channel
 	listErr    error
 	channelErr error
-	mu         sync.Mutex
 	listUIDs   []string
 	channelIDs []string
 }
@@ -46,14 +45,33 @@ func (f *fakeClient) UserDevices(_ context.Context, tuyaUID string) ([]tuya.User
 	return out, f.listErr
 }
 
-func (f *fakeClient) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya.Channel, error) {
-	f.mu.Lock()
-	f.channelIDs = append(f.channelIDs, deviceID)
-	f.mu.Unlock()
-	if f.channelErr != nil {
-		return nil, f.channelErr
+func (f *fakeClient) UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error) {
+	devices, err := f.UserDevices(ctx, tuyaUID)
+	if err != nil {
+		return false, fmt.Errorf("list devices of user %s: %w", tuyaUID, err)
 	}
-	return f.channels[deviceID], nil
+	for _, device := range devices {
+		if device.ID == deviceID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeClient) ChannelNames(_ context.Context, devices []tuya.Device) (map[string][]tuya.Channel, error) {
+	named := make(map[string][]tuya.Channel, len(devices))
+	var errs []error
+	for _, device := range devices {
+		f.channelIDs = append(f.channelIDs, device.ID)
+		if f.channelErr != nil {
+			errs = append(errs, fmt.Errorf("device %s: %w", device.ID, f.channelErr))
+			continue
+		}
+		if channels := f.channels[device.ID]; channels != nil {
+			named[device.ID] = channels
+		}
+	}
+	return named, errors.Join(errs...)
 }
 
 func (f *fakeClient) listCalled() bool { return len(f.listUIDs) > 0 }
@@ -63,12 +81,12 @@ func linkedAccount() Account {
 }
 
 func ownedDevices() []tuya.UserDevice {
-	return []tuya.UserDevice{{ID: "dev-1", Category: "kg"}}
+	return []tuya.UserDevice{{Device: tuya.Device{ID: "dev-1", Category: "kg"}}}
 }
 
 func TestListDevices(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	client := &fakeClient{devices: []tuya.UserDevice{{ID: "dev-1"}}}
+	client := &fakeClient{devices: []tuya.UserDevice{{Device: tuya.Device{ID: "dev-1"}}}}
 	c := NewService(client, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
@@ -80,9 +98,6 @@ func TestListDevices(t *testing.T) {
 	if store.gotOwner != "owner-1" {
 		t.Errorf("store.Get called with %q, want owner-1", store.gotOwner)
 	}
-	if len(client.channelIDs) != 0 {
-		t.Errorf("channel names requested for %v, want none", client.channelIDs)
-	}
 	if got[0].Channels == nil {
 		t.Error("Channels is nil, want an empty non-nil slice")
 	}
@@ -92,9 +107,9 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	client := &fakeClient{
 		devices: []tuya.UserDevice{
-			{ID: "switch-1", Category: "kg"},
-			{ID: "outlet-1", Category: "cz"},
-			{ID: "sensor-1", Category: "wsdcg"},
+			{Device: tuya.Device{ID: "switch-1", Category: "kg"}},
+			{Device: tuya.Device{ID: "outlet-1", Category: "cz"}},
+			{Device: tuya.Device{ID: "sensor-1", Category: "wsdcg"}},
 		},
 		channels: map[string][]tuya.Channel{
 			"switch-1": {{Identifier: "switch_1", Name: "Kitchen light"}},
@@ -119,15 +134,12 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	if len(byID["sensor-1"]) != 0 || byID["sensor-1"] == nil {
 		t.Errorf("sensor-1 mapping = %+v, want empty non-nil", byID["sensor-1"])
 	}
-	if len(client.channelIDs) != 2 {
-		t.Errorf("channel names requested for %v, want only the two multi-gang devices", client.channelIDs)
-	}
 }
 
 func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
 	client := &fakeClient{
-		devices:    []tuya.UserDevice{{ID: "switch-1", Category: "kg"}},
+		devices:    []tuya.UserDevice{{Device: tuya.Device{ID: "switch-1", Category: "kg"}}},
 		channelErr: errors.New("boom"),
 	}
 	c := NewService(client, store)
@@ -174,7 +186,7 @@ func TestHasDevice(t *testing.T) {
 
 func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	client := &fakeClient{devices: []tuya.UserDevice{{ID: "someone-elses-device"}}}
+	client := &fakeClient{devices: []tuya.UserDevice{{Device: tuya.Device{ID: "someone-elses-device"}}}}
 	c := NewService(client, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {

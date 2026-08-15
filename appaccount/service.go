@@ -11,8 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 
 	"go.naturallyfunny.dev/tuya"
@@ -40,7 +38,8 @@ type Store interface {
 
 type Client interface {
 	UserDevices(ctx context.Context, tuyaUID string) ([]tuya.UserDevice, error)
-	DeviceChannelNames(ctx context.Context, deviceID string) ([]tuya.Channel, error)
+	UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error)
+	ChannelNames(ctx context.Context, devices []tuya.Device) (map[string][]tuya.Channel, error)
 }
 
 type Service struct {
@@ -56,48 +55,7 @@ func (s *Service) Account(ctx context.Context, owner string) (Account, error) {
 	return s.store.Get(ctx, owner)
 }
 
-func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, error) {
-	tuyaUID, err := s.tuyaUID(ctx, owner)
-	if err != nil {
-		return nil, err
-	}
-	found, err := s.client.UserDevices(ctx, tuyaUID)
-	if err != nil {
-		return nil, err
-	}
-	devices := make([]Device, len(found))
-	for idx, device := range found {
-		devices[idx] = Device{UserDevice: device, Channels: []tuya.Channel{}}
-	}
-	if err := s.resolveChannelNames(ctx, devices); err != nil {
-		return nil, fmt.Errorf("resolve channel names: %w", err)
-	}
-	return devices, nil
-}
-
-func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
-	tuyaUID, err := s.tuyaUID(ctx, owner)
-	if err != nil {
-		return false, err
-	}
-	devices, err := s.client.UserDevices(ctx, tuyaUID)
-	if err != nil {
-		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
-	}
-	for _, d := range devices {
-		if d.ID == deviceID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func IsMultiGang(category string) bool {
-	c := strings.ToLower(category)
-	return c == "kg" || strings.HasPrefix(c, "cz")
-}
-
-func (s *Service) tuyaUID(ctx context.Context, owner string) (string, error) {
+func (s *Service) uid(ctx context.Context, owner string) (string, error) {
 	acc, err := s.store.Get(ctx, owner)
 	if err != nil {
 		return "", err
@@ -108,37 +66,38 @@ func (s *Service) tuyaUID(ctx context.Context, owner string) (string, error) {
 	return acc.TuyaUID, nil
 }
 
-func (s *Service) resolveChannelNames(ctx context.Context, devices []Device) error {
-	var targets []*Device
-	for idx := range devices {
-		device := &devices[idx]
-		if IsMultiGang(device.Category) && device.ID != "" {
-			targets = append(targets, device)
+func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, error) {
+	uid, err := s.uid(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	found, err := s.client.UserDevices(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	base := make([]tuya.Device, len(found))
+	for idx, device := range found {
+		base[idx] = device.Device
+	}
+	named, err := s.client.ChannelNames(ctx, base)
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel names: %w", err)
+	}
+	devices := make([]Device, len(found))
+	for idx, device := range found {
+		channels := named[device.ID]
+		if channels == nil {
+			channels = []tuya.Channel{}
 		}
+		devices[idx] = Device{UserDevice: device, Channels: channels}
 	}
-	if len(targets) == 0 {
-		return nil
+	return devices, nil
+}
+
+func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
+	uid, err := s.uid(ctx, owner)
+	if err != nil {
+		return false, err
 	}
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-	)
-	for _, device := range targets {
-		wg.Go(func() {
-			channels, err := s.client.DeviceChannelNames(ctx, device.ID)
-			if err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("device %s: %w", device.ID, err))
-				mu.Unlock()
-				return
-			}
-			if channels == nil {
-				return
-			}
-			device.Channels = channels
-		})
-	}
-	wg.Wait()
-	return errors.Join(errs...)
+	return s.client.UserHasDevice(ctx, uid, deviceID)
 }

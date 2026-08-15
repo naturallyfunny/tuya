@@ -72,8 +72,10 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 - **`tuya.Client` = satu method satu endpoint, kecuali `Do`/token/retry** — dijaga disiplin, bukan
   batas tipe; facade `IoT` dicabut karena lapisan tanpa pekerjaan tak punya nama jujur, dan yang
   membatasi `Do` itu konvensi pintu menerima interface lokal. **Nama tipe = nama method**; tipe
-  device subset wire (identitas bukan presentasi), komposisi milik pintu, tak ada `Device` polos.
-  Keep = identifier + `status`/flag yang jadi N request kalau dibuang; `local_key` rahasia.
+  device subset wire (identitas bukan presentasi), komposisi milik pintu. Keep = identifier +
+  `status`/flag yang jadi N request kalau dibuang; `local_key` rahasia. **`Device` = `ID` +
+  `Category`** di-embed keduanya supaya `ChannelNames` melayani dua pohon — cuma itu yang dieja sama
+  (`ProductID` beda casing, `Name` beda **arti**, Fakta API 2); slice tak kovarian, pintu merakit.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan** — owner bukan "tenant", space bukan
   "root". Tafsir bisnis boleh di prosa (README, doc comment), tak pernah di identifier, tabel, kolom.
 - **Wrapper tidak bikin vocabulary paralel.** Identifier Tuya telanjang: `string` untuk
@@ -95,7 +97,7 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   ikut beres. Space yang di-link owner tak bisa dihapus (`ErrOwnerSpaceProtected`); rename boleh.
 - **`tuya.ListSpaces(ctx, 0, …)` = top level seluruh project; yang menahannya tes, bukan tipe.**
   `ownerSpace()` menolak owner tanpa link dan link ber-space_id 0; `resolve()` memetakan id 0 jadi
-  space owner, jadi `target` tak pernah 0. Padanannya `tuyaUID()` menolak link ber-uid kosong —
+  space owner, jadi `target` tak pernah 0. Padanannya `uid()` menolak link ber-uid kosong —
   `/users//devices` bukan pertanyaan tentang siapa pun. Dijaga `TestTheDoorNeverListsTheWholeProject`
   + `TestTheDoorNeverAsksTuyaAboutAnEmptyUID`; method baru yang mengoper space id ke `ListSpaces` wajib
   lewat `resolve()`.

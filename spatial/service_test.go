@@ -108,7 +108,7 @@ func (f *fakeSpaceClient) SpaceDevices(_ context.Context, spaceIDs []int64, _ bo
 	f.devicesOf = spaceIDs
 	f.devicesLastID = lastID
 	f.devicesPageSize = pageSize
-	return []tuya.SpaceDevice{{ID: "vdevo-1", Name: "Televisi"}}, nil
+	return []tuya.SpaceDevice{{Device: tuya.Device{ID: "vdevo-1"}, Name: "Televisi"}}, nil
 }
 
 func newSpaceDoor(t *testing.T, client *fakeSpaceClient) *Service {
