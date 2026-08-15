@@ -53,6 +53,9 @@ type fakeSpaceClient struct {
 	listed          []int64
 	resourcesOf     int64
 	resourceCalls   int
+	devicesOf       []int64
+	devicesLastID   string
+	devicesPageSize int
 }
 
 func (f *fakeSpaceClient) SpaceRelation(_ context.Context, parent, child int64) (bool, error) {
@@ -101,6 +104,13 @@ func (f *fakeSpaceClient) SpaceResources(_ context.Context, id int64, _ bool, _ 
 	return nil, tuya.Page{}, nil
 }
 
+func (f *fakeSpaceClient) SpaceDevices(_ context.Context, spaceIDs []int64, _ bool, _, _ []string, lastID string, pageSize int) ([]tuya.SpaceDevice, error) {
+	f.devicesOf = spaceIDs
+	f.devicesLastID = lastID
+	f.devicesPageSize = pageSize
+	return []tuya.SpaceDevice{{ID: "vdevo-1", Name: "Televisi"}}, nil
+}
+
 func newSpaceDoor(t *testing.T, client *fakeSpaceClient) *Service {
 	t.Helper()
 	store := &fakeSpaceStore{space: Space{Owner: "owner-1", SpaceID: ownerSpace}}
@@ -144,8 +154,38 @@ func TestSpaceDoorRefusesSpacesOutsideTheOwnersSpace(t *testing.T) {
 	if _, _, err := door.SpaceResources(ctx, "owner-1", foreign, false, tuya.Page{}); !errors.Is(err, ErrNotOwned) {
 		t.Errorf("SpaceResources error = %v, want ErrNotOwned", err)
 	}
-	if client.queried != 0 || client.modified != 0 || client.deleted != 0 || len(client.listed) != 0 || client.createdParent != 0 || client.resourcesOf != 0 {
+	if _, err := door.SpaceDevices(ctx, "owner-1", foreign, "", 0); !errors.Is(err, ErrNotOwned) {
+		t.Errorf("SpaceDevices error = %v, want ErrNotOwned", err)
+	}
+	if client.queried != 0 || client.modified != 0 || client.deleted != 0 || len(client.listed) != 0 || client.createdParent != 0 || client.resourcesOf != 0 || client.devicesOf != nil {
 		t.Errorf("an operation ran past the guard: %+v", client)
+	}
+}
+
+func TestSpaceDevicesListsOneResolvedSpace(t *testing.T) {
+	client := &fakeSpaceClient{contains: map[int64]bool{insideRoom: true}}
+	door := newSpaceDoor(t, client)
+	ctx := context.Background()
+
+	devices, err := door.SpaceDevices(ctx, "owner-1", insideRoom, "vdevo-0", 5)
+	if err != nil {
+		t.Fatalf("SpaceDevices: unexpected error: %v", err)
+	}
+	if len(devices) != 1 || devices[0].ID != "vdevo-1" {
+		t.Errorf("devices = %+v, want the one the client returned", devices)
+	}
+	if len(client.devicesOf) != 1 || client.devicesOf[0] != insideRoom {
+		t.Errorf("asked for spaces %v, want only %d", client.devicesOf, insideRoom)
+	}
+	if client.devicesLastID != "vdevo-0" || client.devicesPageSize != 5 {
+		t.Errorf("paging = (%q, %d), want it passed through untouched", client.devicesLastID, client.devicesPageSize)
+	}
+
+	if _, err := door.SpaceDevices(ctx, "owner-1", 0, "", 0); err != nil {
+		t.Fatalf("SpaceDevices: unexpected error: %v", err)
+	}
+	if len(client.devicesOf) != 1 || client.devicesOf[0] != ownerSpace {
+		t.Errorf("asked for spaces %v, want the owner's space %d", client.devicesOf, ownerSpace)
 	}
 }
 

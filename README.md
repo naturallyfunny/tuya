@@ -71,6 +71,23 @@ should hand you Tuya; the owner mapping is something built *on* the API, not the
 and a consumer that already has its own mapping should not have to import it to make a device
 call. So the client is the root package and each door is an opt-in import.
 
+### Two doors, two Tuya models
+
+The doors are not two flavours of one thing, and their surfaces do not match. `appaccount`
+anchors an owner to a **Tuya UID**, which owns devices directly. `spatial` anchors an owner to a
+**space in your project's tree**, which owns devices by binding. Those are separate worlds inside
+Tuya, not two views of one: an app account's own places live in the older *asset* family
+(`/v1.0/iot-03/users/{uid}/assets`), and the ids it returns are rejected by every
+`/v2.0/cloud/space` endpoint this library speaks — `40001900 No space permission`, the same answer
+you get for a space in someone else's project. Nothing relates the two trees, and no endpoint
+maps a space back to a user.
+
+So there is no `appaccount.ChildSpaces`, and `spatial` has no "every device this owner has" with
+full detail. Neither is an omission waiting to be filled; building either would mean inventing a
+mapping Tuya does not have. Pick the door that matches how your devices are actually organized,
+and treat the two id spaces as unrelated — they are both `int64` and `string`, and mixing them
+buys you a runtime error, not a compile-time one.
+
 ## Concepts
 
 Two composable tiers. Bind the one your caller needs:
@@ -306,7 +323,17 @@ if errors.Is(err, spatial.ErrNotOwned) {
 }
 
 space, err := hotel.SpaceOf(ctx, owner) // which space is theirs
+
+// Devices bound to one space, with names and online state. lastID is the id of the last
+// device of the previous page and is exclusive; "" starts. pageSize 0 means Tuya's maximum
+// of 20. An empty slice — not a short one — is the end.
+devices, err := hotel.SpaceDevices(ctx, owner, room, "", 0)
 ```
+
+`SpaceDevices` reports only the devices bound to that one space; it never descends. Tuya's
+`is_recursion` has no effect on this endpoint, so the door does not offer a recursive form it
+could not honour. For the whole subtree use `SpaceResources`, which *is* transitive but returns
+identifiers only — that difference is Tuya's, not ours, and it is what `ContainsDevice` is built on.
 
 The two questions the door can answer about a space and a device:
 
@@ -678,6 +705,10 @@ To keep the surface honest, the library deliberately does **not**:
 - **Wrap the whole Tuya Cloud OpenAPI.** Two domains are typed so far: device operations and
   Tuya's seven space-management endpoints. `tuya.Client.Do` is the raw escape hatch for
   everything else — deliberately unguarded.
+- **List the spaces of an app account, or the users of a space.** Tuya keeps an app account's own
+  places in a different family from your project's space tree, and gives no endpoint that crosses
+  between them — see [Two doors, two Tuya models](#two-doors-two-tuya-models). The only honest
+  version would be a brute-force scan billed to you quietly, so there is none.
 - **Cache ownership answers.** Every `HasDevice` / `ContainsDevice` asks Tuya afresh. Not
   because the library assumes you ask rarely, but because invalidating that cache needs events
   (device added, removed, re-linked) that Tuya never tells us about. Guessing a TTL on your
@@ -746,6 +777,10 @@ and running both stores against a real database or the Firestore emulator is on 
   existing database recorded the old flat versions, so the new ones read as unapplied and run
   again — each is a `CREATE TABLE IF NOT EXISTS`, a no-op on a table that is already there. The
   new version rows land beside the old ones, which are then dead but harmless.
+- **New in v0.8.0: `spatial.SpaceDevices`.** The door could already list a subtree's device *ids*
+  through `SpaceResources`; this lists one space's devices with names, category and online state.
+  It also adds a method to the `spatial.Client` interface, which is breaking only if you
+  implemented that interface yourself — a fake in your tests, most likely.
 - **Fixed in v0.8.0: `SpaceDevices` with `pageSize` 0.** The parameter used to be dropped from
   the query, and `thing/space/device` rejects a request without `page_size` outright with
   `1110 illegal param` — so that argument named a value that could never work. It now stands

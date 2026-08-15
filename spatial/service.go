@@ -43,6 +43,7 @@ type Client interface {
 	DeleteSpace(ctx context.Context, id int64) error
 	ListSpaces(ctx context.Context, id int64, onlySub bool, page tuya.Page) ([]int64, tuya.Page, error)
 	SpaceResources(ctx context.Context, id int64, onlySub bool, page tuya.Page) ([]tuya.Resource, tuya.Page, error)
+	SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]tuya.SpaceDevice, error)
 	SpaceRelation(ctx context.Context, parent, child int64) (bool, error)
 }
 
@@ -126,6 +127,19 @@ func (s *Service) SpaceResources(ctx context.Context, owner string, id int64, on
 		return nil, tuya.Page{}, err
 	}
 	return s.client.SpaceResources(ctx, target, onlySub, page)
+}
+
+func (s *Service) SpaceDevices(ctx context.Context, owner string, id int64, lastID string, pageSize int) ([]tuya.SpaceDevice, error) {
+	ownerSpace, target, err := s.resolve(ctx, owner, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
+		return nil, err
+	}
+	// recursive is false because Tuya's is_recursion does nothing here: a device is only ever
+	// listed by the one space it is bound to, so the door has no truthful recursive form to offer.
+	return s.client.SpaceDevices(ctx, []int64{target}, false, nil, nil, lastID, pageSize)
 }
 
 func (s *Service) ContainsSpace(ctx context.Context, owner string, id int64) (bool, error) {

@@ -54,11 +54,10 @@ ok, err = hotel.ContainsDevice(ctx, owner, deviceID) // mahal, lihat Design Deci
 
 ## Region & Migrations
 
-`baseURL` di-inject saat `tuya.New()`: `openapi.tuyaus.com` (W America), `openapi-ueaz.tuyaus.com`
-(E America), `openapi.tuyaeu.com` (C Europe), `openapi-weaz.tuyaeu.com` (W Europe),
-`openapi.tuyacn.com` (China), `openapi.tuyain.com` (India), **`openapi-sg.iotbing.com`** (Singapore —
-domainnya beda sendiri). Salah DC tetap bisa terbitkan token, lalu semua endpoint isi ditolak
-`28841107 "data center is suspended"` — gejalanya mirip kredensial mati.
+`baseURL` di-inject saat `tuya.New()`: `openapi.tuyaus.com` / `openapi-ueaz.tuyaus.com` (America W/E),
+`openapi.tuyaeu.com` / `openapi-weaz.tuyaeu.com` (Europe C/W), `openapi.tuyacn.com`,
+`openapi.tuyain.com`, **`openapi-sg.iotbing.com`** (Singapore — domainnya beda sendiri). Salah DC tetap
+bisa terbitkan token, lalu semua endpoint isi ditolak `28841107` — gejalanya mirip kredensial mati.
 Migration runner custom, bukan `golang-migrate`. `migrations/<pintu>/000N_deskripsi.up.sql`/`.down.sql`,
 hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, wajib `IF NOT EXISTS`/
 `IF EXISTS`, jangan pernah edit yang sudah di-commit. **Tiap store cuma menaikkan migrasi pintunya.**
@@ -66,10 +65,10 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 ## Design Decisions — yang mudah "dibersihkan" lalu rusak diam-diam
 
 - **Satu jalur refresh token: `1010` dari Tuya, titik** (dijaga `client_test.go`). Jangan tambahkan
-  cek expiry sebelum request — **pernah ada dan dicabut**: tidak menjamin apa pun (token bisa mati
-  semili-detik setelah lolos cek, jadi jalur reaktif tetap wajib), hemat satu request per dua jam,
-  ditagih `tokenLock.Lock()` **eksklusif di tiap `Do`**. `Client` cuma simpan `accessToken`; field
-  lain tak dibaca dan mengundang cek itu tumbuh lagi.
+  cek expiry — **pernah ada dan dicabut**: tak menjamin apa pun (token bisa mati semili-detik setelah
+  lolos cek, jadi jalur reaktif tetap wajib), hemat satu request per dua jam, ditagih
+  `tokenLock.Lock()` **eksklusif di tiap `Do`**. `Client` cuma simpan `accessToken`; sisanya
+  mengundang cek itu tumbuh lagi.
 - **`tuya.Client` = satu method satu endpoint, kecuali `Do`/token/retry** — dijaga disiplin, bukan
   batas tipe; facade `IoT` dicabut karena lapisan tanpa pekerjaan tak punya nama jujur, dan yang
   membatasi `Do` itu konvensi pintu menerima interface lokal. **Nama tipe = nama method**; tipe
@@ -78,13 +77,12 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan** — owner bukan "tenant", space bukan
   "root". Tafsir bisnis boleh di prosa (README, doc comment), tak pernah di identifier, tabel, kolom.
 - **Wrapper tidak bikin vocabulary paralel.** Identifier Tuya telanjang: `string` untuk
-  owner/uid/device id, `int64` untuk space id. Dicoba dan dicabut di v0.7.0 — tiap pembelaannya
-  runtuh saat dicek (`String()` diabaikan `encoding/json`; untyped constant tetap lolos tertukar;
-  guard nilai-nol cuma kena kasus sempit). **Klaim sebuah tipe harus bertahan setelah dicek, bukan
-  setelah diucapkan.** Pengecualian satu, `SpaceResourceType`: 0 itu *tipe*-nya, bukan "sebuah
-  resource device"; prefiks `Space` wajib karena Tuya memakai istilah itu beda-beda antar modul.
-  Cuma `SpaceResourceDevice = 0` yang pernah terlihat di response — nilai lain **belum diverifikasi**;
-  `res_type` tak dikenal toh ter-decode aman.
+  owner/uid/device id, `int64` untuk space id. Dicoba dan dicabut di v0.7.0 — tiap pembelaannya runtuh
+  saat dicek (`String()` diabaikan `encoding/json`; untyped constant tetap lolos tertukar; guard
+  nilai-nol cuma kena kasus sempit). **Klaim sebuah tipe harus bertahan setelah dicek, bukan setelah
+  diucapkan.** Pengecualian satu, `SpaceResourceType`: 0 itu *tipe*-nya, bukan "sebuah resource
+  device"; prefiks `Space` wajib karena istilah itu beda-beda antar modul Tuya. Cuma
+  `SpaceResourceDevice = 0` yang pernah terlihat, sisanya **belum diverifikasi**.
 - **`HasDevice` = list-then-contains di root.** Satu request, flat berapa pun jumlah device. Tak
   di-cache: invalidasi butuh tahu kapan device ditambah/dicabut/di-relink, Tuya tak mengabari satu pun.
   Sengaja tidak minta `DeviceChannelNames` — butuh identitas, bukan label.
@@ -97,10 +95,10 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   ikut beres. Space yang di-link owner tak bisa dihapus (`ErrOwnerSpaceProtected`); rename boleh.
 - **`tuya.ListSpaces(ctx, 0, …)` = top level seluruh project; yang menahannya tes, bukan tipe.**
   `ownerSpace()` menolak owner tanpa link dan link ber-space_id 0; `resolve()` memetakan id 0 jadi
-  space owner, jadi `target` tidak pernah 0. Padanannya `tuyaUID()` menolak link ber-uid kosong —
+  space owner, jadi `target` tak pernah 0. Padanannya `tuyaUID()` menolak link ber-uid kosong —
   `/users//devices` bukan pertanyaan tentang siapa pun. Dijaga `TestTheDoorNeverListsTheWholeProject`
-  + `TestTheDoorNeverAsksTuyaAboutAnEmptyUID`; method baru yang meneruskan space id ke `ListSpaces`
-  **wajib** lewat `resolve()`.
+  + `TestTheDoorNeverAsksTuyaAboutAnEmptyUID`; method baru yang mengoper space id ke `ListSpaces` wajib
+  lewat `resolve()`.
 - **`result: false` → `ErrNotApplied` untuk modify & delete.** `Do` mengembalikan `result` mentah
   begitu `success: true`, jadi "terhapus" bisa berarti tidak terhapus; `result` tidak ada = `false`
   (space terhapus → `success:true` tanpa `result` → `ErrSpaceNotFound`). Di `SpaceRelation` boolean-nya
@@ -132,15 +130,17 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 7. **`is_recursion` tidak berefek**; `SpaceResources` justru transitif. Device ber-`bindSpaceId` X tak
    terlihat dari induk X maupun root, dan di X sendiri `true`/`false` sama saja — sementara
    `space/{id}/resource` melaporkan device milik cucunya. Itu pijakan `ContainsDevice`.
+8. **Akun app dan space project = dua pohon terpisah**: `iot-03/users/{uid}/assets` punya "tempat"
+   milik user app, tapi id-nya ditolak `/v2.0/cloud/space` (`40001900`) dan tak ada endpoint space →
+   user. `appaccount` **tak boleh** dapat method space — mustahil, bukan pekerjaan tertunda (README).
 
 ## Conventions
 
 - `tuya.New(...)` → `*tuya.Client`; `NewService(client, store)` tiap pintu terima `client` sebagai
   interface lokal, bukan implementor. `spatial.Space` sengaja senama `tuya.Space`.
-- Nama package pintu = nama model device Tuya; namanya tak mengulang package
-  (`appaccount.Account`/`.Store`/`.ErrNotLinked`), adapter tetap `AppAccountStore`/`SpaceStore` karena
-  satu package menampung dua store. Penjawab kepemilikan `(bool, error)`, kata kerja bertanya — bukan
-  `AssertX`/`MustX`.
+- Nama package pintu = nama model device Tuya; namanya tak mengulang package (`appaccount.Account`/
+  `.Store`/`.ErrNotLinked`), adapter tetap `AppAccountStore`/`SpaceStore` karena satu package menampung
+  dua store. Penjawab kepemilikan `(bool, error)`, kata kerja bertanya — bukan `AssertX`/`MustX`.
 - Adapter punya `var _ appaccount.Store = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile;
   konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` cuma menaikkan migrasi
   pintunya sendiri. Kolom tetap `text`/`bigint`, tanpa konversi.
