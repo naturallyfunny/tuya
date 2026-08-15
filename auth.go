@@ -56,6 +56,13 @@ func (c *Client) setAuthHeaders(req *http.Request, sig *signature) {
 	req.Header.Set("nonce", sig.Nonce)
 }
 
+type token struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpireTime   int64  `json:"expire_time"`
+	UID          string `json:"uid"`
+}
+
 func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	const path = "/v1.0/token?grant_type=1"
 	fullURL := c.baseURL + path
@@ -87,13 +94,6 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	return &tuyaResp, nil
 }
 
-type token struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpireTime   int64  `json:"expire_time"`
-	UID          string `json:"uid"`
-}
-
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
@@ -109,19 +109,4 @@ func (c *Client) updateToken(ctx context.Context) error {
 	newToken.ExpireTime = time.Now().Unix() + newToken.ExpireTime
 	c.token = &newToken
 	return nil
-}
-
-func (c *Client) forceRefreshToken(ctx context.Context) error {
-	c.tokenLock.Lock()
-	defer c.tokenLock.Unlock()
-	return c.updateToken(ctx)
-}
-
-func (c *Client) ensureValidToken(ctx context.Context) error {
-	c.tokenLock.Lock()
-	defer c.tokenLock.Unlock()
-	if c.token != nil && c.token.ExpireTime > time.Now().Unix() {
-		return nil
-	}
-	return c.updateToken(ctx)
 }

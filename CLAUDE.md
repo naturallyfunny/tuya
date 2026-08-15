@@ -18,8 +18,8 @@ file = nama pintunya, bukan `store.go`/`service.go` polos. Domain baru → file 
 ditulis di file domainnya, bukan di client.go.
 
 ```
-client.go       Client: cache/refresh token, Do + retry-on-1010, signBusinessRequest (dekat tokenLock).
-auth.go         hmacSign + auth header + token lifecycle; token-request ditandatangani tanpa token.
+client.go       Client + dua jalur refresh, Do (cek expiry → retry-on-1010), signBusinessRequest.
+auth.go         hmacSign + auth header + fetch/decode token; token-request ditandatangani tanpa token.
 device.go       Tipe domain + method 1:1 endpoint. space.go idem (helper satu-satunya: listQuery).
 appaccount/     Pintu app-account utuh: tipe, error, Store + Client interface, Service,
                 + IsMultiGang (kategori kg/cz*, publik) dan resolveChannelNames (fan-out + errors.Join).
