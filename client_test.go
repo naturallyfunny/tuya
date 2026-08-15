@@ -15,7 +15,6 @@ type tuyaStub struct {
 	tokensIssued    int
 	businessTokens  []string
 	rejectFirstCall bool
-	expiresIn       int64
 }
 
 func (s *tuyaStub) handler(w http.ResponseWriter, r *http.Request) {
@@ -24,11 +23,7 @@ func (s *tuyaStub) handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if strings.HasPrefix(r.URL.Path, "/v1.0/token") {
 		s.tokensIssued++
-		expiresIn := s.expiresIn
-		if expiresIn == 0 {
-			expiresIn = 7200
-		}
-		fmt.Fprintf(w, `{"success":true,"t":1,"result":{"access_token":"tok-%d","expire_time":%d,"uid":"uid-1"}}`, s.tokensIssued, expiresIn)
+		fmt.Fprintf(w, `{"success":true,"t":1,"result":{"access_token":"tok-%d","expire_time":7200,"uid":"uid-1"}}`, s.tokensIssued)
 		return
 	}
 	s.businessTokens = append(s.businessTokens, r.Header.Get("access_token"))
@@ -87,22 +82,35 @@ func TestDoReusesCachedToken(t *testing.T) {
 	}
 }
 
-func TestDoRefreshesAnExpiredTokenBeforeSpendingTheRequest(t *testing.T) {
-	stub := &tuyaStub{expiresIn: -1}
-	client := newStubbedClient(t, stub)
+func TestDoSpendsALongExpiredTokenRatherThanConsultAClock(t *testing.T) {
+	stub := &tuyaStub{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/v1.0/token") {
+			stub.tokensIssued++
+			fmt.Fprintf(w, `{"success":true,"t":1,"result":{"access_token":"tok-%d","expire_time":0,"uid":"uid-1"}}`, stub.tokensIssued)
+			return
+		}
+		stub.businessTokens = append(stub.businessTokens, r.Header.Get("access_token"))
+		fmt.Fprint(w, `{"success":true,"t":1,"result":{"ok":true}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New("access-id", "access-secret", server.URL, WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New: unexpected error: %v", err)
+	}
 	if _, err := client.Do(context.Background(), http.MethodGet, "/v1.0/devices/dev-1/status", nil); err != nil {
 		t.Fatalf("Do: unexpected error: %v", err)
 	}
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	if stub.tokensIssued != 2 {
-		t.Errorf("token endpoint hit %d times, want 2 (New's prefetch and Do's expiry check)", stub.tokensIssued)
+	if stub.tokensIssued != 1 {
+		t.Errorf("token endpoint hit %d times, want 1: only Tuya may declare a token dead", stub.tokensIssued)
 	}
-	if len(stub.businessTokens) != 1 {
-		t.Fatalf("business calls = %d, want 1: the expired token must never be spent on a request", len(stub.businessTokens))
-	}
-	if stub.businessTokens[0] != "tok-2" {
-		t.Errorf("business call carried %q, want the refreshed tok-2", stub.businessTokens[0])
+	if len(stub.businessTokens) != 1 || stub.businessTokens[0] != "tok-1" {
+		t.Errorf("business calls used %v, want the cached tok-1 spent as it is", stub.businessTokens)
 	}
 }
 

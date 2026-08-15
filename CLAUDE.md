@@ -69,9 +69,11 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 
 ## Design Decisions — yang mudah "dibersihkan" lalu rusak diam-diam
 
-- **Dua jalur refresh token, jangan disatukan** (dijaga `client_test.go`). `ensureValidToken`
-  (lazy) percaya expiry cache; `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya —
-  Tuya otoritas atas tokennya. Disatukan = retry mati: reaktif return nil, token ditolak dipakai ulang.
+- **Satu jalur refresh token: `1010` dari Tuya, titik** (dijaga `client_test.go`). Jangan tambahkan
+  cek expiry sebelum request — **pernah ada dan dicabut**. Ia tidak menjamin apa pun (token bisa mati
+  semili-detik setelah lolos cek, jadi jalur reaktif tetap wajib), menghemat satu request per dua jam,
+  dan menagihnya dengan `tokenLock.Lock()` **eksklusif di tiap `Do`**. Karena itu `expire_time` tidak
+  disimpan: jam kita bukan otoritas, dan field yang tak dibaca mengundang cek itu tumbuh lagi.
 - **`cloud.Client` = satu method satu endpoint, kecuali `Do`/token/retry — dijaga disiplin, bukan
   batas tipe.** Facade `cloud.IoT` dicabut: satu field `*Client`, tanpa kerja, dan `Do` tetap
   terjangkau pemiliknya — yang membatasi `Do` itu konvensi pintu menerima interface lokal. Lapisan

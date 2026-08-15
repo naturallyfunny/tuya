@@ -82,8 +82,8 @@ Two composable tiers. Bind the one your caller needs:
 | Your own owner ID, one space per owner                    | `spatial.Service`      | **yes**            |
 
 - **`tuya.Client`** — the client. Speaks Tuya at the **project level**: one access ID/secret
-  yields an access token it caches in memory and refreshes on its own (lazily on expiry,
-  reactively when Tuya returns code `1010`). Handles HMAC-SHA256 signing. Every other method is
+  yields an access token it caches in memory and refreshes on its own, when Tuya rejects the
+  cached one with code `1010`. Handles HMAC-SHA256 signing. Every other method is
   one Tuya endpoint: `UserDevices`, `SpaceDevices`, `DeviceStatus`, `SendCommands`,
   `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`, `DeleteSpace`,
   `SpaceResources`, `ListSpaces`, `SpaceRelation` for spaces. One method per endpoint, so each
@@ -425,13 +425,17 @@ Each one is a domain or usage constraint, not an oversight.
   The Tuya credential is project-wide, not per-user, so there is nothing per-user to persist.
   A token store would add a dependency and a failure mode for state that is trivially re-fetched.
 
-  The two refresh paths are deliberately different. `ensureValidToken` is lazy and trusts the
-  cached expiry — the right call before a request goes out. `forceRefreshToken` runs when Tuya
-  answers code `1010` and ignores that expiry entirely, because Tuya is the authority on whether
-  a token it issued is still good: it will reject tokens our clock still considers valid, after a
-  credential rotation or clock drift. Sharing one refresh path between the two looks like
-  cleanup and quietly disables the retry — the reactive call returns `nil` without doing
-  anything, and the replay carries the token Tuya just refused. A test pins this.
+  There is exactly one refresh path, and Tuya starts it. `Do` spends whatever token is cached;
+  when Tuya answers code `1010` the client refreshes and replays the request once. It does not
+  check the expiry first, and `expire_time` is not even kept.
+
+  That was tried and removed. A clock check cannot make the token valid — Tuya will refuse
+  tokens our clock still likes, after a credential rotation or a little drift, and it can refuse
+  one a millisecond after the check passed. So the reactive path has to exist and has to be
+  correct no matter what; the check on top of it is pure optimization. What it optimizes is one
+  wasted request every two hours. What it costs is an exclusive `tokenLock.Lock()` on **every**
+  `Do`, a serialization point on the hottest path in the library. Defending it needs an argument
+  about how often callers call — which is the one argument this library does not make.
 
 - **`HasDevice` answers by list-then-contains, and lives in the door.**
   It lists the account's devices and checks membership. The cost is **one request, flat** no

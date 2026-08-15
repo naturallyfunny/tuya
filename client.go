@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"sync"
-	"time"
 )
 
 type Client struct {
@@ -21,15 +20,6 @@ type Client struct {
 	httpClient   *http.Client
 	token        *token
 	tokenLock    sync.RWMutex
-}
-
-func (c *Client) ensureValidToken(ctx context.Context) error {
-	c.tokenLock.Lock()
-	defer c.tokenLock.Unlock()
-	if c.token != nil && c.token.ExpireTime > time.Now().Unix() {
-		return nil
-	}
-	return c.updateToken(ctx)
 }
 
 type Option func(*Client)
@@ -47,7 +37,7 @@ func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error
 	if client.httpClient == nil {
 		client.httpClient = http.DefaultClient
 	}
-	if err := client.ensureValidToken(context.Background()); err != nil {
+	if err := client.refreshToken(context.Background()); err != nil {
 		return nil, fmt.Errorf("tuya: New: prefetch token: %w", err)
 	}
 	return client, nil
@@ -77,7 +67,7 @@ type response struct {
 	Msg     string          `json:"msg"`
 }
 
-func (c *Client) forceRefreshToken(ctx context.Context) error {
+func (c *Client) refreshToken(ctx context.Context) error {
 	c.tokenLock.Lock()
 	defer c.tokenLock.Unlock()
 	return c.updateToken(ctx)
@@ -94,9 +84,6 @@ func (c *Client) signBusinessRequest(method, path string, body []byte) (*signatu
 }
 
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
-	if err := c.ensureValidToken(ctx); err != nil {
-		return nil, fmt.Errorf("failed to ensure a valid token: %w", err)
-	}
 	const maxIoTRequestAttempts = 2
 	for attempt := range maxIoTRequestAttempts {
 		fullURL := c.baseURL + path
@@ -134,7 +121,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		}
 		const tokenExpiredTuyaErrorCode = 1010
 		if tuyaResp.Code == tokenExpiredTuyaErrorCode && attempt == 0 {
-			if err := c.forceRefreshToken(ctx); err != nil {
+			if err := c.refreshToken(ctx); err != nil {
 				return nil, fmt.Errorf("failed to refresh token after Tuya error %d: %w", tuyaResp.Code, err)
 			}
 			continue

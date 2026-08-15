@@ -59,7 +59,6 @@ func (c *Client) setAuthHeaders(req *http.Request, sig *signature) {
 type token struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-	ExpireTime   int64  `json:"expire_time"`
 	UID          string `json:"uid"`
 }
 
@@ -106,7 +105,6 @@ func (c *Client) updateToken(ctx context.Context) error {
 	if err := json.Unmarshal(resp.Result, &newToken); err != nil {
 		return fmt.Errorf("failed to unmarshal token result: %w", err)
 	}
-	newToken.ExpireTime = time.Now().Unix() + newToken.ExpireTime
 	c.token = &newToken
 	return nil
 }
