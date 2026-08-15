@@ -50,11 +50,11 @@ func (s *Service) Account(ctx context.Context, owner string) (Account, error) {
 }
 
 func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, error) {
-	acc, err := s.store.Get(ctx, owner)
+	tuyaUID, err := s.tuyaUID(ctx, owner)
 	if err != nil {
 		return nil, err
 	}
-	found, err := s.client.UserDevices(ctx, acc.TuyaUID)
+	found, err := s.client.UserDevices(ctx, tuyaUID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,11 +69,11 @@ func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, erro
 }
 
 func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, error) {
-	acc, err := s.store.Get(ctx, owner)
+	tuyaUID, err := s.tuyaUID(ctx, owner)
 	if err != nil {
 		return false, err
 	}
-	devices, err := s.client.UserDevices(ctx, acc.TuyaUID)
+	devices, err := s.client.UserDevices(ctx, tuyaUID)
 	if err != nil {
 		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
 	}
@@ -88,6 +88,17 @@ func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, 
 func IsMultiGang(category string) bool {
 	c := strings.ToLower(category)
 	return c == "kg" || strings.HasPrefix(c, "cz")
+}
+
+func (s *Service) tuyaUID(ctx context.Context, owner string) (string, error) {
+	acc, err := s.store.Get(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	if acc.TuyaUID == "" {
+		return "", ErrNotLinked
+	}
+	return acc.TuyaUID, nil
 }
 
 func (s *Service) resolveChannelNames(ctx context.Context, devices []Device) error {

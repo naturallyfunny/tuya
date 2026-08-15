@@ -197,6 +197,25 @@ func TestHasDeviceAccountNotLinked(t *testing.T) {
 	}
 }
 
+func TestTheDoorNeverAsksTuyaAboutAnEmptyUID(t *testing.T) {
+	ctx := context.Background()
+	listing := &fakeClient{}
+	c := NewService(listing, &fakeStore{acc: Account{Owner: "owner-1"}})
+	if _, err := c.ListDevices(ctx, "owner-1"); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("ListDevices error = %v, want ErrNotLinked for an empty linked uid", err)
+	}
+	asking := &fakeClient{}
+	c = NewService(asking, &fakeStore{acc: Account{Owner: "owner-1"}})
+	if _, err := c.HasDevice(ctx, "owner-1", "dev-1"); !errors.Is(err, ErrNotLinked) {
+		t.Errorf("HasDevice error = %v, want ErrNotLinked for an empty linked uid", err)
+	}
+	for name, client := range map[string]*fakeClient{"ListDevices": listing, "HasDevice": asking} {
+		if client.listCalled() {
+			t.Errorf("%s called UserDevices with %v — an empty uid there asks Tuya about /users//devices", name, client.listUIDs)
+		}
+	}
+}
+
 func TestHasDeviceSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}

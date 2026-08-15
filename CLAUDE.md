@@ -109,6 +109,8 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   `ownerSpace()` menolak owner tanpa link dan link ber-space_id 0; `resolve()` memetakan id 0 jadi
   space owner, jadi `target` tidak pernah 0 — dijaga `TestTheDoorNeverListsTheWholeProject`.
   Method baru di `SpaceClient` yang meneruskan space id ke `ListSpaces` **wajib** lewat `resolve()`.
+  Padanannya di app-account: `tuyaUID()` menolak link ber-uid kosong (`/users//devices` bukan
+  pertanyaan tentang siapa pun), dijaga `TestTheDoorNeverAsksTuyaAboutAnEmptyUID`.
 - **`result: false` → `cloud.ErrNotApplied` untuk modify & delete.** `Do` mengembalikan `result`
   mentah begitu `success: true`, jadi tanpa ini "terhapus" bisa berarti tidak terhapus. `result` yang
   tidak ada = `false` (nyata: space yang sudah dihapus dijawab `success:true` tanpa `result`, jadi
