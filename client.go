@@ -1,6 +1,10 @@
-// Package tuya is a signed client for the Tuya Cloud OpenAPI. Client handles
-// token lifecycle, HMAC-SHA256 signing and retries; every other method on it is
-// one-to-one with a Tuya device or space endpoint.
+// Package tuya is a signed client for the Tuya Cloud OpenAPI, for anyone with a
+// Tuya cloud project. Client handles token lifecycle, HMAC-SHA256 signing and
+// retries; every other method on it is one-to-one with a Tuya device or space
+// endpoint. Nothing here is a capability Tuya does not have natively.
+//
+// Packages appaccount and spatial build on this one for applications that carry
+// their own user identity; postgres and firestore store what those two need.
 package tuya
 
 import (

@@ -1,21 +1,23 @@
 # tuya
 
-Module Go `go.naturallyfunny.dev/tuya` — library publik untuk Tuya Cloud OpenAPI. Tugasnya satu:
-**memetakan identitas developer (`owner`) ke identifier Tuya** (Tuya UID, space ID, device ID).
-**Ia menjawab, ia tidak memutuskan** — kepemilikan disajikan sebagai pertanyaan
-(`HasDevice`/`ContainsSpace`/`ContainsDevice` → `bool`), bukan guard yang menolak; guard wajib
-memblokir consumer yang benar, karena share device lintas akun itu sah. `false` = fakta, `error`
-hanya untuk pencarian yang gagal. **Agnostic terhadap consumer**: tidak ada keputusan yang boleh
-bersandar pada tebakan siapa pemanggilnya atau seberapa sering. Turunannya, **biaya sebuah operasi
-adalah fakta yang harus ditulis**; dan library menjawab pertanyaan identitas kalau Tuya memberi
-primitifnya, kalau tidak ia tidak mengarangnya dengan brute force lalu menagihkannya diam-diam.
+Module Go `go.naturallyfunny.dev/tuya` — library publik untuk Tuya Cloud OpenAPI, dua lapis beda
+aturan. **Root = SDK Tuya murni**: satu method satu endpoint, tak ada kapabilitas non-native, buat
+siapa saja yang punya cloud project. **Pintu (`appaccount`, `spatial`) = app siap pakai** buat consumer
+yang sudah punya sistem identitas sendiri — jembatan `owner` mereka ke identifier Tuya, dan cuma di
+sini fitur tambahan boleh tumbuh kalau berguna: `appaccount` = satu user consumer satu akun app Tuya,
+`spatial` = user diikat ke space bukan ke akun (app smart hotel). **Pintu menjawab, ia tidak
+memutuskan** — kepemilikan disajikan sebagai pertanyaan (`HasDevice`/`ContainsSpace`/`ContainsDevice`
+→ `bool`), bukan guard yang menolak; guard wajib memblokir consumer yang benar, karena share device
+lintas akun itu sah. `false` = fakta, `error` cuma untuk pencarian yang gagal. **Agnostic terhadap
+consumer**: tak ada keputusan yang bersandar pada tebakan siapa pemanggilnya atau seberapa sering.
+Turunannya, **biaya sebuah operasi adalah fakta yang harus ditulis**; dan pintu tidak mengarang
+jawaban dengan brute force kalau Tuya tak memberi primitifnya.
 
 ## Struktur
 
-Root = layer Tuya murni: trusted, tanpa konsep owner. Tiap pintu owner-scoped punya package sendiri,
-adapter store dipecah per backend. Dependency acyclic: **postgres/firestore → pintu → root**. Nama
-file = nama pintunya, bukan `store.go` polos; domain baru → file baru, method endpoint di file
-domainnya bukan di client.go.
+Root trusted, tanpa konsep owner. Tiap pintu owner-scoped punya package sendiri, adapter store dipecah
+per backend. Dependency acyclic: **postgres/firestore → pintu → root**. Nama file = nama pintunya,
+bukan `store.go` polos; domain baru → file baru, method endpoint di file domainnya bukan di client.go.
 
 ```
 client.go       Client + accessToken, refreshToken (satu jalur), Do + retry-on-1010, signBusinessRequest.
@@ -32,9 +34,8 @@ firestore/      app_account.go (+ Option/WithCollection, validateOwner), spatial
 
 ## Cara Pakai
 
-Dua tier: `tuya.Client` (`Do` + method device/uid/space-addressed; perintah device lewat sini, tak
-ada yang bisa diresolusi pintu) → dua pintu owner-scoped, tiap pintu satu package, namanya menyebut
-**model device Tuya**: app-account (batasnya Tuya UID) dan spatial (pohon space milik project).
+`tuya.Client` = `Do` + method device/uid/space-addressed; perintah device lewat sini, tak ada yang
+bisa diresolusi pintu. Batas tiap pintu: `appaccount` Tuya UID, `spatial` pohon space milik project.
 
 ```go
 c, err := tuya.New(accessID, accessSecret, baseURL)
@@ -74,9 +75,8 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   membatasi `Do` itu konvensi pintu menerima interface lokal. **Nama tipe = nama method**; tipe
   device subset wire (identitas bukan presentasi), komposisi milik pintu, tak ada `Device` polos.
   Keep = identifier + `status`/flag yang jadi N request kalau dibuang; `local_key` rahasia.
-- **Nama hanya boleh memuat kata yang kodenya cek atau lakukan.** Library tidak pernah tahu owner itu
-  "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
-  identifier, tabel, atau kolom.
+- **Nama hanya boleh memuat kata yang kodenya cek atau lakukan** — owner bukan "tenant", space bukan
+  "root". Tafsir bisnis boleh di prosa (README, doc comment), tak pernah di identifier, tabel, kolom.
 - **Wrapper tidak bikin vocabulary paralel.** Identifier Tuya telanjang: `string` untuk
   owner/uid/device id, `int64` untuk space id. Dicoba dan dicabut di v0.7.0 — tiap pembelaannya
   runtuh saat dicek (`String()` diabaikan `encoding/json`; untyped constant tetap lolos tertukar;
@@ -137,10 +137,10 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 
 - `tuya.New(...)` → `*tuya.Client`; `NewService(client, store)` tiap pintu terima `client` sebagai
   interface lokal, bukan implementor. `spatial.Space` sengaja senama `tuya.Space`.
-- Nama package pintu = nama model device Tuya; di dalamnya nama tidak mengulang package-nya
-  (`appaccount.Account`/`.Store`/`.ErrNotLinked`), tapi adapter tetap `AppAccountStore`/`SpaceStore`
-  karena satu package menampung dua store. Penjawab kepemilikan `(bool, error)`, namanya kata kerja
-  bertanya — bukan `AssertX`/`MustX`.
+- Nama package pintu = nama model device Tuya; namanya tak mengulang package
+  (`appaccount.Account`/`.Store`/`.ErrNotLinked`), adapter tetap `AppAccountStore`/`SpaceStore` karena
+  satu package menampung dua store. Penjawab kepemilikan `(bool, error)`, kata kerja bertanya — bukan
+  `AssertX`/`MustX`.
 - Adapter punya `var _ appaccount.Store = (*AppAccountStore)(nil)` supaya drift ketahuan saat compile;
   konstruktornya terima `Querier`, bukan `*pgxpool.Pool`. `WithAutoMigrate()` cuma menaikkan migrasi
   pintunya sendiri. Kolom tetap `text`/`bigint`, tanpa konversi.

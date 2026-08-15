@@ -1,3 +1,10 @@
+// Package appaccount bridges an application's own user identity to Tuya, for
+// integrations where one of your users owns one Tuya app account — the "connect
+// your Tuya account" shape. An owner is whatever your application calls a user;
+// the door resolves it to a Tuya UID and answers what that account holds.
+//
+// Unlike the root package this one may offer what Tuya has no single endpoint
+// for, as long as it is useful and its cost is written down.
 package appaccount
 
 import (

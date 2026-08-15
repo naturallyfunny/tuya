@@ -1,3 +1,11 @@
+// Package spatial bridges an application's own user identity to Tuya's space
+// tree, for integrations where a user is tied to a place rather than to an
+// account — a smart hotel app, where a guest gets a room and the room holds the
+// devices. An owner is whatever your application calls a user; the door resolves
+// it to a space and answers what that subtree contains.
+//
+// Unlike the root package this one may offer what Tuya has no single endpoint
+// for, as long as it is useful and its cost is written down.
 package spatial
 
 import (

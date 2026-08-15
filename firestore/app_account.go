@@ -1,3 +1,6 @@
+// Package firestore stores the links the appaccount and spatial doors depend on,
+// implementing appaccount.Store and spatial.Store over Cloud Firestore. It is a
+// persistence layer only: it never talks to Tuya and holds no ownership rules.
 package firestore
 
 import (
