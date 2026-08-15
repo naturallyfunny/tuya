@@ -14,11 +14,11 @@ dengan brute force lalu menagihkannya diam-diam.
 
 Root = layer Tuya murni: trusted, tanpa konsep owner. Tiap pintu owner-scoped punya package sendiri,
 adapter store dipecah per backend. Dependency acyclic: **postgres/firestore → pintu → root**. Nama
-file = nama pintunya, bukan `store.go`/`service.go` polos. Domain baru → file baru; method `IoT`
+file = nama pintunya, bukan `store.go`/`service.go` polos. Domain baru → file baru; method endpoint
 ditulis di file domainnya, bukan di client.go.
 
 ```
-client.go       Transport: token cache/refresh, HMAC-SHA256, Do + retry-on-1010, + IoT facade.
+client.go       Client: token cache/refresh, HMAC-SHA256, Do + retry-on-1010. Tak memuat endpoint.
 auth.go         Signing (token-request vs business-request beda) + token lifecycle.
 device.go       Tipe domain + method 1:1 endpoint. space.go idem (helper satu-satunya: listQuery).
 appaccount/     Pintu app-account utuh: tipe, error, Store + Client interface, Service,
@@ -33,26 +33,25 @@ firestore/      app_account.go (+ Option/WithCollection, validateOwner), spatial
 
 ## Cara Pakai
 
-Tiga tier: `cloud.Client` (transport) → `cloud.IoT` (facade device/uid/space-addressed) → dua pintu
-owner-scoped di root. Namanya menyebut **model device Tuya**: app-account (tiap orang punya akun
-app, di-link ke project, batasnya Tuya UID) dan spatial (device tinggal di pohon space milik
-project; satu project tepat satu pohon). Prefix `App` memisahkan akun app dari akun project.
-Perintah device lewat `cloud.IoT` — device-addressed, tidak ada yang bisa diresolusi pintu root.
+Dua tier: `cloud.Client` (`Do` + method device/uid/space-addressed; perintah device lewat sini,
+tak ada yang bisa diresolusi pintu) → dua pintu owner-scoped, tiap pintu satu package. Namanya
+menyebut **model device Tuya**: app-account (tiap orang punya akun app, di-link ke project, batasnya
+Tuya UID) dan spatial (device tinggal di pohon space milik project, satu project tepat satu pohon).
 
 ```go
-iot := cloud.NewIoT(transport) // cloud.New(accessID, accessSecret, baseURL)
-client := tuya.NewAppAccountClient(iot, store) // postgres.NewAppAccountStore(ctx, pool, opts...)
+c, err := cloud.New(accessID, accessSecret, baseURL)
+app := appaccount.NewService(c, store) // postgres.NewAppAccountStore(ctx, pool, opts...)
 
-devices, err := client.ListDevices(ctx, owner)    // resolve owner→uid + channel-name
-ok, err := client.HasDevice(ctx, owner, deviceID) // pertanyaan, bukan vonis
+devices, err := app.ListDevices(ctx, owner)    // resolve owner→uid + channel-name
+ok, err := app.HasDevice(ctx, owner, deviceID) // pertanyaan, bukan vonis
 if !ok && !myShareRules.Allow(owner, deviceID) {
     return ErrForbidden // punya consumer, bukan punya library
 }
-err = iot.SendCommands(ctx, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
+err = c.SendCommands(ctx, deviceID, []cloud.DataPoint{{Code: "switch_1", Value: true}})
 
 // Pintu spatial sama, cuma store-nya beda. id 0 = space owner; onlySub true = anak langsung;
 // cloud.Page{} = halaman pertama, halaman yang dikembalikan diumpankan balik.
-hotel := tuya.NewSpaceClient(iot, spaces)
+hotel := spatial.NewService(c, spaces)
 rooms, next, err := hotel.ChildSpaces(ctx, owner, 0, true, cloud.Page{})
 ok, err = hotel.ContainsDevice(ctx, owner, deviceID) // mahal, lihat Design Decisions
 ```
@@ -73,10 +72,13 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 - **Dua jalur refresh token, jangan disatukan** (dijaga `cloud/client_test.go`). `ensureValidToken`
   (lazy) percaya expiry cache; `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya —
   Tuya otoritas atas tokennya. Disatukan = retry mati: reaktif return nil, token ditolak dipakai ulang.
-- **`cloud.IoT` = satu method satu endpoint; nama tipe = nama method; tipe device subset wire —
-  identitas, bukan presentasi.** Komposisi (`HasX`, list-yang-di-enrich) milik pemanggil, di root;
-  tak ada `cloud.Device` polos (Fakta 3). Keep = identifier + `status`/flag yang jadi N request
-  kalau dibuang + yang dibaca kode kita; `local_key` rahasia. `Client`: refresh/retry dikecualikan.
+- **`cloud.Client` = satu method satu endpoint, kecuali `Do`/token/retry — dijaga disiplin, bukan
+  batas tipe.** Facade `cloud.IoT` dicabut: satu field `*Client`, tanpa kerja, dan `Do` tetap
+  terjangkau pemiliknya — yang membatasi `Do` itu konvensi pintu menerima interface lokal. Lapisan
+  tanpa pekerjaan tak punya nama jujur: `IoT`/`Service`/`API`/`Transport` sama-sama gagal. **Nama
+  tipe = nama method; tipe device subset wire, identitas bukan presentasi**; komposisi (`HasX`,
+  list-di-enrich) milik pintu, tak ada `cloud.Device` polos. Keep = identifier + `status`/flag yang
+  jadi N request kalau dibuang; `local_key` rahasia.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan.** Library tidak pernah tahu owner itu
   "tenant" atau space itu puncak apa pun. Tafsir bisnis consumer boleh di README, tidak pernah di
   identifier, tabel, atau kolom.
@@ -135,8 +137,8 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 
 ## Conventions
 
-- `tuya.New(...)` → `*tuya.Client`; `tuya.NewIoT(c)` → `*tuya.IoT`; `NewService(iot, store)` tiap pintu
-  terima `iot` sebagai interface lokal, bukan implementor. `spatial.Space` sengaja senama `tuya.Space`.
+- `tuya.New(...)` → `*tuya.Client`; `NewService(client, store)` tiap pintu terima `client` sebagai
+  interface lokal, bukan implementor. `spatial.Space` sengaja senama `tuya.Space`.
 - Nama package pintu = nama model device Tuya; di dalamnya nama tidak mengulang package-nya
   (`appaccount.Account`/`.Store`/`.ErrNotLinked`), tapi adapter tetap `AppAccountStore`/`SpaceStore`
   karena satu package menampung dua store. Penjawab kepemilikan `(bool, error)` dan namanya kata
