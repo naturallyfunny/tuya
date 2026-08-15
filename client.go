@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-
-
 type Client struct {
 	accessID     string
 	accessSecret string
@@ -33,6 +31,7 @@ func (c *Client) ensureValidToken(ctx context.Context) error {
 	}
 	return c.updateToken(ctx)
 }
+
 type Option func(*Client)
 
 func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error) {
