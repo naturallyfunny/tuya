@@ -39,12 +39,12 @@ type Client interface {
 }
 
 type Service struct {
-	iot   Client
-	store Store
+	client Client
+	store  Store
 }
 
-func NewService(iot Client, store Store) *Service {
-	return &Service{iot: iot, store: store}
+func NewService(client Client, store Store) *Service {
+	return &Service{client: client, store: store}
 }
 
 func (s *Service) SpaceOf(ctx context.Context, owner string) (Space, error) {
@@ -59,7 +59,7 @@ func (s *Service) CreateSpace(ctx context.Context, owner, name string, parentID 
 	if err := s.assertSpaceOwned(ctx, ownerSpace, parent); err != nil {
 		return 0, err
 	}
-	return s.iot.CreateSpace(ctx, name, parent, description)
+	return s.client.CreateSpace(ctx, name, parent, description)
 }
 
 func (s *Service) Space(ctx context.Context, owner string, id int64) (tuya.Space, error) {
@@ -70,7 +70,7 @@ func (s *Service) Space(ctx context.Context, owner string, id int64) (tuya.Space
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return tuya.Space{}, err
 	}
-	return s.iot.Space(ctx, target)
+	return s.client.Space(ctx, target)
 }
 
 func (s *Service) ModifySpace(ctx context.Context, owner string, id int64, name, description string) error {
@@ -81,7 +81,7 @@ func (s *Service) ModifySpace(ctx context.Context, owner string, id int64, name,
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return err
 	}
-	return s.iot.ModifySpace(ctx, target, name, description)
+	return s.client.ModifySpace(ctx, target, name, description)
 }
 
 func (s *Service) DeleteSpace(ctx context.Context, owner string, id int64) error {
@@ -95,7 +95,7 @@ func (s *Service) DeleteSpace(ctx context.Context, owner string, id int64) error
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return err
 	}
-	return s.iot.DeleteSpace(ctx, target)
+	return s.client.DeleteSpace(ctx, target)
 }
 
 func (s *Service) ChildSpaces(ctx context.Context, owner string, id int64, onlySub bool, page tuya.Page) ([]int64, tuya.Page, error) {
@@ -106,7 +106,7 @@ func (s *Service) ChildSpaces(ctx context.Context, owner string, id int64, onlyS
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return nil, tuya.Page{}, err
 	}
-	return s.iot.ListSpaces(ctx, target, onlySub, page)
+	return s.client.ListSpaces(ctx, target, onlySub, page)
 }
 
 func (s *Service) SpaceResources(ctx context.Context, owner string, id int64, onlySub bool, page tuya.Page) ([]tuya.Resource, tuya.Page, error) {
@@ -117,7 +117,7 @@ func (s *Service) SpaceResources(ctx context.Context, owner string, id int64, on
 	if err := s.assertSpaceOwned(ctx, ownerSpace, target); err != nil {
 		return nil, tuya.Page{}, err
 	}
-	return s.iot.SpaceResources(ctx, target, onlySub, page)
+	return s.client.SpaceResources(ctx, target, onlySub, page)
 }
 
 func (s *Service) ContainsSpace(ctx context.Context, owner string, id int64) (bool, error) {
@@ -146,7 +146,7 @@ func (s *Service) ContainsDevice(ctx context.Context, owner, deviceID string) (b
 	}
 	page := tuya.Page{PageSize: deviceScanPageSize}
 	for range deviceScanMaxPages {
-		resources, next, err := s.iot.SpaceResources(ctx, ownerSpace, false, page)
+		resources, next, err := s.client.SpaceResources(ctx, ownerSpace, false, page)
 		if err != nil {
 			return false, fmt.Errorf("scan resources of space %d: %w", ownerSpace, err)
 		}
@@ -191,7 +191,7 @@ func (s *Service) assertSpaceOwned(ctx context.Context, ownerSpace, target int64
 	if target == ownerSpace {
 		return nil
 	}
-	contains, err := s.iot.SpaceRelation(ctx, ownerSpace, target)
+	contains, err := s.client.SpaceRelation(ctx, ownerSpace, target)
 	if err != nil {
 		var apiErr *tuya.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == CodeNoSpacePermission {

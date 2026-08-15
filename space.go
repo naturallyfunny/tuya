@@ -43,7 +43,7 @@ func listQuery(onlySub bool, page Page) url.Values {
 	return query
 }
 
-func (c *IoT) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
+func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
 	body, err := json.Marshal(struct {
 		Name        string `json:"name"`
 		ParentID    int64  `json:"parent_id,omitempty"`
@@ -52,7 +52,7 @@ func (c *IoT) CreateSpace(ctx context.Context, name string, parentID int64, desc
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal space payload: %w", err)
 	}
-	raw, err := c.client.Do(ctx, http.MethodPost, "/v2.0/cloud/space/creation", body)
+	raw, err := c.Do(ctx, http.MethodPost, "/v2.0/cloud/space/creation", body)
 	if err != nil {
 		return 0, err
 	}
@@ -65,9 +65,9 @@ func (c *IoT) CreateSpace(ctx context.Context, name string, parentID int64, desc
 
 var ErrSpaceNotFound = errors.New("tuya: space not found")
 
-func (c *IoT) Space(ctx context.Context, id int64) (Space, error) {
+func (c *Client) Space(ctx context.Context, id int64) (Space, error) {
 	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return Space{}, err
 	}
@@ -83,7 +83,7 @@ func (c *IoT) Space(ctx context.Context, id int64) (Space, error) {
 
 var ErrNotApplied = errors.New("tuya: operation was not applied")
 
-func (c *IoT) ModifySpace(ctx context.Context, id int64, name, description string) error {
+func (c *Client) ModifySpace(ctx context.Context, id int64, name, description string) error {
 	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
 	body, err := json.Marshal(struct {
 		Name        string `json:"name,omitempty"`
@@ -92,7 +92,7 @@ func (c *IoT) ModifySpace(ctx context.Context, id int64, name, description strin
 	if err != nil {
 		return fmt.Errorf("failed to marshal space payload: %w", err)
 	}
-	raw, err := c.client.Do(ctx, http.MethodPut, path, body)
+	raw, err := c.Do(ctx, http.MethodPut, path, body)
 	if err != nil {
 		return err
 	}
@@ -108,9 +108,9 @@ func (c *IoT) ModifySpace(ctx context.Context, id int64, name, description strin
 	return nil
 }
 
-func (c *IoT) DeleteSpace(ctx context.Context, id int64) error {
+func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
 	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
-	raw, err := c.client.Do(ctx, http.MethodDelete, path, nil)
+	raw, err := c.Do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
 	}
@@ -126,9 +126,9 @@ func (c *IoT) DeleteSpace(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (c *IoT) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
+func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
 	path := fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, listQuery(onlySub, page).Encode())
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
@@ -144,13 +144,13 @@ func (c *IoT) SpaceResources(ctx context.Context, id int64, onlySub bool, page P
 	return body.Data, body.Page, nil
 }
 
-func (c *IoT) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
+func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
 	query := listQuery(onlySub, page)
 	if id != 0 {
 		query.Set("space_id", strconv.FormatInt(id, 10))
 	}
 	path := fmt.Sprintf("/v2.0/cloud/space/child?%s", query.Encode())
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
@@ -166,12 +166,12 @@ func (c *IoT) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page)
 	return body.Data, body.Page, nil
 }
 
-func (c *IoT) SpaceRelation(ctx context.Context, parent, child int64) (bool, error) {
+func (c *Client) SpaceRelation(ctx context.Context, parent, child int64) (bool, error) {
 	query := url.Values{}
 	query.Set("parent_id", strconv.FormatInt(parent, 10))
 	query.Set("child_id", strconv.FormatInt(child, 10))
 	path := fmt.Sprintf("/v2.0/cloud/space/relation?%s", query.Encode())
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false, err
 	}

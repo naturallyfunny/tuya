@@ -57,7 +57,7 @@ func (s *spaceStub) calls() []recordedRequest {
 	return append([]recordedRequest(nil), s.requests...)
 }
 
-func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
+func newSpaceClient(t *testing.T, result string) (*Client, *spaceStub) {
 	t.Helper()
 	stub := &spaceStub{result: result}
 	server := httptest.NewServer(http.HandlerFunc(stub.handler))
@@ -66,12 +66,12 @@ func newSpaceIoT(t *testing.T, result string) (*IoT, *spaceStub) {
 	if err != nil {
 		t.Fatalf("New: unexpected error: %v", err)
 	}
-	return NewIoT(client), stub
+	return client, stub
 }
 
 func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 	const beyond2Pow53 = 9007199254740993
-	iot, _ := newSpaceIoT(t, fmt.Sprintf(`{"id":%d}`, beyond2Pow53))
+	iot, _ := newSpaceClient(t, fmt.Sprintf(`{"id":%d}`, beyond2Pow53))
 	space, err := iot.Space(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("Space: unexpected error: %v", err)
@@ -82,7 +82,7 @@ func TestSpaceIDSurvivesBeyondFloat64Precision(t *testing.T) {
 }
 
 func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `{"id":1,"name":"Lobby","parent_id":2,"root_id":3}`)
+	iot, _ := newSpaceClient(t, `{"id":1,"name":"Lobby","parent_id":2,"root_id":3}`)
 	space, err := iot.Space(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("Space: unexpected error: %v", err)
@@ -94,7 +94,7 @@ func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 }
 
 func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
+	iot, _ := newSpaceClient(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
 	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
@@ -108,7 +108,7 @@ func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 }
 
 func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `{"data":[],"page_size":3}`)
+	iot, _ := newSpaceClient(t, `{"data":[],"page_size":3}`)
 	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
@@ -122,7 +122,7 @@ func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 }
 
 func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
+	iot, stub := newSpaceClient(t, `{"data":[],"page_size":200}`)
 	if _, _, err := iot.SpaceResources(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 }
 
 func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[],"page_size":200}`)
+	iot, stub := newSpaceClient(t, `{"data":[],"page_size":200}`)
 	if _, _, err := iot.ListSpaces(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 }
 
 func TestOnlySubNarrowsTheListing(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[],"last_row_key":0,"page_size":200}`)
+	iot, stub := newSpaceClient(t, `{"data":[],"last_row_key":0,"page_size":200}`)
 	if _, _, err := iot.ListSpaces(context.Background(), 15, true, Page{}); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestOnlySubNarrowsTheListing(t *testing.T) {
 }
 
 func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `{"data":[]}`)
+	iot, stub := newSpaceClient(t, `{"data":[]}`)
 	if _, _, err := iot.ListSpaces(context.Background(), 0, true, Page{}); err != nil {
 		t.Fatalf("ListSpaces(0): unexpected error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 }
 
 func TestListSpacesDecodesIDList(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `{"last_row_key":15000003,"data":[15000002,15000003],"page_size":200}`)
+	iot, _ := newSpaceClient(t, `{"last_row_key":15000003,"data":[15000002,15000003],"page_size":200}`)
 	ids, page, err := iot.ListSpaces(context.Background(), 15, true, Page{})
 	if err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
@@ -206,7 +206,7 @@ func TestListSpacesDecodesIDList(t *testing.T) {
 
 func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
 	for _, result := range []string{``, `null`} {
-		iot, _ := newSpaceIoT(t, result)
+		iot, _ := newSpaceClient(t, result)
 		_, err := iot.Space(context.Background(), 15)
 		if !errors.Is(err, ErrSpaceNotFound) {
 			t.Errorf("Space with result %q: error = %v, want ErrSpaceNotFound", result, err)
@@ -215,7 +215,7 @@ func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
 }
 
 func TestAMissingResultIsNotAConfirmation(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `null`)
+	iot, _ := newSpaceClient(t, `null`)
 	if err := iot.DeleteSpace(context.Background(), 15); !errors.Is(err, ErrNotApplied) {
 		t.Errorf("DeleteSpace error = %v, want ErrNotApplied", err)
 	}
@@ -225,7 +225,7 @@ func TestAMissingResultIsNotAConfirmation(t *testing.T) {
 }
 
 func TestModifyAndDeleteRejectResultFalse(t *testing.T) {
-	iot, _ := newSpaceIoT(t, `false`)
+	iot, _ := newSpaceClient(t, `false`)
 	if err := iot.ModifySpace(context.Background(), 15, "Lobby", ""); !errors.Is(err, ErrNotApplied) {
 		t.Errorf("ModifySpace error = %v, want ErrNotApplied", err)
 	}
@@ -235,7 +235,7 @@ func TestModifyAndDeleteRejectResultFalse(t *testing.T) {
 }
 
 func TestModifyAndDeleteAcceptResultTrue(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `true`)
+	iot, stub := newSpaceClient(t, `true`)
 	if err := iot.ModifySpace(context.Background(), 15, "Lobby", "front desk"); err != nil {
 		t.Fatalf("ModifySpace: unexpected error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestModifyAndDeleteAcceptResultTrue(t *testing.T) {
 }
 
 func TestCreateSpaceOmitsTheZeroParent(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `150000001`)
+	iot, stub := newSpaceClient(t, `150000001`)
 	id, err := iot.CreateSpace(context.Background(), "Hotel", 0, "")
 	if err != nil {
 		t.Fatalf("CreateSpace: unexpected error: %v", err)
@@ -276,7 +276,7 @@ func TestCreateSpaceOmitsTheZeroParent(t *testing.T) {
 }
 
 func TestSpaceRelationReportsFalseAsData(t *testing.T) {
-	iot, stub := newSpaceIoT(t, `false`)
+	iot, stub := newSpaceClient(t, `false`)
 	contains, err := iot.SpaceRelation(context.Background(), 15, 16)
 	if err != nil {
 		t.Fatalf("SpaceRelation: unexpected error: %v", err)

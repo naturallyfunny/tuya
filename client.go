@@ -1,6 +1,6 @@
-// Package tuya is a signed client for the Tuya Cloud OpenAPI: a transport
-// (Client) that handles token lifecycle and HMAC-SHA256 signing, plus an IoT
-// facade whose methods are one-to-one with Tuya device and space endpoints.
+// Package tuya is a signed client for the Tuya Cloud OpenAPI. Client handles
+// token lifecycle, HMAC-SHA256 signing and retries; every other method on it is
+// one-to-one with a Tuya device or space endpoint.
 package tuya
 
 import (
@@ -113,12 +113,4 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		return nil, &APIError{Code: tuyaResp.Code, Msg: tuyaResp.Msg}
 	}
 	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
-}
-
-type IoT struct {
-	client *Client
-}
-
-func NewIoT(c *Client) *IoT {
-	return &IoT{client: c}
 }

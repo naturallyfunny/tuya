@@ -29,7 +29,7 @@ func (f *fakeStore) Unlink(context.Context, string) error {
 	panic("Unlink not expected in these tests")
 }
 
-type fakeIoT struct {
+type fakeClient struct {
 	devices    []tuya.UserDevice
 	channels   map[string][]tuya.Channel
 	listErr    error
@@ -39,14 +39,14 @@ type fakeIoT struct {
 	channelIDs []string
 }
 
-func (f *fakeIoT) UserDevices(_ context.Context, tuyaUID string) ([]tuya.UserDevice, error) {
+func (f *fakeClient) UserDevices(_ context.Context, tuyaUID string) ([]tuya.UserDevice, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
 	out := make([]tuya.UserDevice, len(f.devices))
 	copy(out, f.devices)
 	return out, f.listErr
 }
 
-func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya.Channel, error) {
+func (f *fakeClient) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya.Channel, error) {
 	f.mu.Lock()
 	f.channelIDs = append(f.channelIDs, deviceID)
 	f.mu.Unlock()
@@ -56,7 +56,7 @@ func (f *fakeIoT) DeviceChannelNames(_ context.Context, deviceID string) ([]tuya
 	return f.channels[deviceID], nil
 }
 
-func (f *fakeIoT) listCalled() bool { return len(f.listUIDs) > 0 }
+func (f *fakeClient) listCalled() bool { return len(f.listUIDs) > 0 }
 
 func linkedAccount() Account {
 	return Account{Owner: "owner-1", TuyaUID: "uid-1"}
@@ -68,8 +68,8 @@ func ownedDevices() []tuya.UserDevice {
 
 func TestListDevices(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []tuya.UserDevice{{ID: "dev-1"}}}
-	c := NewService(iot, store)
+	client := &fakeClient{devices: []tuya.UserDevice{{ID: "dev-1"}}}
+	c := NewService(client, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("ListDevices: unexpected error: %v", err)
@@ -80,8 +80,8 @@ func TestListDevices(t *testing.T) {
 	if store.gotOwner != "owner-1" {
 		t.Errorf("store.Get called with %q, want owner-1", store.gotOwner)
 	}
-	if len(iot.channelIDs) != 0 {
-		t.Errorf("channel names requested for %v, want none", iot.channelIDs)
+	if len(client.channelIDs) != 0 {
+		t.Errorf("channel names requested for %v, want none", client.channelIDs)
 	}
 	if got[0].Channels == nil {
 		t.Error("Channels is nil, want an empty non-nil slice")
@@ -90,7 +90,7 @@ func TestListDevices(t *testing.T) {
 
 func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{
+	client := &fakeClient{
 		devices: []tuya.UserDevice{
 			{ID: "switch-1", Category: "kg"},
 			{ID: "outlet-1", Category: "cz"},
@@ -101,7 +101,7 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 			"outlet-1": {{Identifier: "switch_1", Name: "Fridge"}},
 		},
 	}
-	c := NewService(iot, store)
+	c := NewService(client, store)
 	got, err := c.ListDevices(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("ListDevices: unexpected error: %v", err)
@@ -119,18 +119,18 @@ func TestListDevicesResolvesMultiGangChannelNames(t *testing.T) {
 	if len(byID["sensor-1"]) != 0 || byID["sensor-1"] == nil {
 		t.Errorf("sensor-1 mapping = %+v, want empty non-nil", byID["sensor-1"])
 	}
-	if len(iot.channelIDs) != 2 {
-		t.Errorf("channel names requested for %v, want only the two multi-gang devices", iot.channelIDs)
+	if len(client.channelIDs) != 2 {
+		t.Errorf("channel names requested for %v, want only the two multi-gang devices", client.channelIDs)
 	}
 }
 
 func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{
+	client := &fakeClient{
 		devices:    []tuya.UserDevice{{ID: "switch-1", Category: "kg"}},
 		channelErr: errors.New("boom"),
 	}
-	c := NewService(iot, store)
+	c := NewService(client, store)
 	_, err := c.ListDevices(context.Background(), "owner-1")
 	if err == nil {
 		t.Fatal("ListDevices: got nil error, want the channel-name failure")
@@ -142,21 +142,21 @@ func TestListDevicesReportsChannelNameFailure(t *testing.T) {
 
 func TestListDevicesAccountNotLinked(t *testing.T) {
 	store := &fakeStore{err: ErrNotLinked}
-	iot := &fakeIoT{}
-	c := NewService(iot, store)
+	client := &fakeClient{}
+	c := NewService(client, store)
 	_, err := c.ListDevices(context.Background(), "owner-1")
 	if !errors.Is(err, ErrNotLinked) {
 		t.Fatalf("ListDevices: got %v, want ErrNotLinked", err)
 	}
-	if iot.listCalled() {
+	if client.listCalled() {
 		t.Error("ListDevices delegated to Client despite unlinked account")
 	}
 }
 
 func TestHasDevice(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: ownedDevices()}
-	c := NewService(iot, store)
+	client := &fakeClient{devices: ownedDevices()}
+	c := NewService(client, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {
 		t.Fatalf("HasDevice: unexpected error: %v", err)
@@ -164,18 +164,18 @@ func TestHasDevice(t *testing.T) {
 	if !ok {
 		t.Error("HasDevice: got false for a device the account lists")
 	}
-	if len(iot.listUIDs) != 1 || iot.listUIDs[0] != "uid-1" {
-		t.Errorf("HasDevice listed uids %v, want one call with uid-1", iot.listUIDs)
+	if len(client.listUIDs) != 1 || client.listUIDs[0] != "uid-1" {
+		t.Errorf("HasDevice listed uids %v, want one call with uid-1", client.listUIDs)
 	}
-	if len(iot.channelIDs) != 0 {
-		t.Errorf("HasDevice requested channel names for %v, want none: it needs identity, not labels", iot.channelIDs)
+	if len(client.channelIDs) != 0 {
+		t.Errorf("HasDevice requested channel names for %v, want none: it needs identity, not labels", client.channelIDs)
 	}
 }
 
 func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{devices: []tuya.UserDevice{{ID: "someone-elses-device"}}}
-	c := NewService(iot, store)
+	client := &fakeClient{devices: []tuya.UserDevice{{ID: "someone-elses-device"}}}
+	c := NewService(client, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if err != nil {
 		t.Fatalf("HasDevice: got error %v, want a plain false", err)
@@ -187,12 +187,12 @@ func TestHasDeviceAbsentIsFalseNotError(t *testing.T) {
 
 func TestHasDeviceAccountNotLinked(t *testing.T) {
 	store := &fakeStore{err: ErrNotLinked}
-	iot := &fakeIoT{}
-	c := NewService(iot, store)
+	client := &fakeClient{}
+	c := NewService(client, store)
 	if _, err := c.HasDevice(context.Background(), "owner-1", "dev-1"); !errors.Is(err, ErrNotLinked) {
 		t.Fatalf("HasDevice: got %v, want ErrNotLinked", err)
 	}
-	if iot.listCalled() {
+	if client.listCalled() {
 		t.Error("HasDevice listed devices despite an unlinked account")
 	}
 }
@@ -200,8 +200,8 @@ func TestHasDeviceAccountNotLinked(t *testing.T) {
 func TestHasDeviceSurfacesListError(t *testing.T) {
 	sentinel := errors.New("boom")
 	store := &fakeStore{acc: linkedAccount()}
-	iot := &fakeIoT{listErr: sentinel}
-	c := NewService(iot, store)
+	client := &fakeClient{listErr: sentinel}
+	c := NewService(client, store)
 	ok, err := c.HasDevice(context.Background(), "owner-1", "dev-1")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("HasDevice: got %v, want wrapped sentinel", err)
@@ -213,7 +213,7 @@ func TestHasDeviceSurfacesListError(t *testing.T) {
 
 func TestAccount(t *testing.T) {
 	store := &fakeStore{acc: linkedAccount()}
-	c := NewService(&fakeIoT{}, store)
+	c := NewService(&fakeClient{}, store)
 	acc, err := c.Account(context.Background(), "owner-1")
 	if err != nil {
 		t.Fatalf("Account: unexpected error: %v", err)

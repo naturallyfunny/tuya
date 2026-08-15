@@ -27,8 +27,8 @@ type UserDevice struct {
 	Status    []DataPoint `json:"status"`
 }
 
-func (c *IoT) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, error) {
-	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
+func (c *Client) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, error) {
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ type SpaceDevice struct {
 	IsOnline    bool   `json:"isOnline"`
 }
 
-func (c *IoT) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
+func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
 	ids := make([]string, len(spaceIDs))
 	for i, id := range spaceIDs {
 		ids[i] = strconv.FormatInt(id, 10)
@@ -75,7 +75,7 @@ func (c *IoT) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool
 		query.Set("page_size", strconv.Itoa(pageSize))
 	}
 	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", query.Encode())
-	raw, err := c.client.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +88,8 @@ func (c *IoT) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool
 	return devices, nil
 }
 
-func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
-	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID), nil)
+func (c *Client) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, error) {
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/iot-03/devices/%s/status", deviceID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -102,14 +102,14 @@ func (c *IoT) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint, e
 	return status, nil
 }
 
-func (c *IoT) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
+func (c *Client) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`
 	}{Commands: commands})
 	if err != nil {
 		return fmt.Errorf("failed to marshal command payload: %w", err)
 	}
-	if _, err := c.client.Do(ctx, http.MethodPost, fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID), body); err != nil {
+	if _, err := c.Do(ctx, http.MethodPost, fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID), body); err != nil {
 		return fmt.Errorf("failed to send commands: %w", err)
 	}
 	return nil
@@ -120,8 +120,8 @@ type Channel struct {
 	Name       string `json:"name"`
 }
 
-func (c *IoT) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
-	raw, err := c.client.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
+func (c *Client) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
 	if err != nil {
 		return nil, err
 	}

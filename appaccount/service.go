@@ -37,12 +37,12 @@ type Client interface {
 }
 
 type Service struct {
-	iot   Client
-	store Store
+	client Client
+	store  Store
 }
 
-func NewService(iot Client, store Store) *Service {
-	return &Service{iot: iot, store: store}
+func NewService(client Client, store Store) *Service {
+	return &Service{client: client, store: store}
 }
 
 func (s *Service) Account(ctx context.Context, owner string) (Account, error) {
@@ -54,7 +54,7 @@ func (s *Service) ListDevices(ctx context.Context, owner string) ([]Device, erro
 	if err != nil {
 		return nil, err
 	}
-	found, err := s.iot.UserDevices(ctx, acc.TuyaUID)
+	found, err := s.client.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, 
 	if err != nil {
 		return false, err
 	}
-	devices, err := s.iot.UserDevices(ctx, acc.TuyaUID)
+	devices, err := s.client.UserDevices(ctx, acc.TuyaUID)
 	if err != nil {
 		return false, fmt.Errorf("list devices of owner %s: %w", owner, err)
 	}
@@ -108,7 +108,7 @@ func (s *Service) resolveChannelNames(ctx context.Context, devices []Device) err
 	)
 	for _, device := range targets {
 		wg.Go(func() {
-			channels, err := s.iot.DeviceChannelNames(ctx, device.ID)
+			channels, err := s.client.DeviceChannelNames(ctx, device.ID)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("device %s: %w", device.ID, err))
