@@ -85,7 +85,7 @@ func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, 
 	return false, nil
 }
 
-func isMultiGang(category string) bool {
+func IsMultiGang(category string) bool {
 	c := strings.ToLower(category)
 	return c == "kg" || strings.HasPrefix(c, "cz")
 }
@@ -94,7 +94,7 @@ func (s *Service) resolveChannelNames(ctx context.Context, devices []Device) err
 	var targets []*Device
 	for idx := range devices {
 		device := &devices[idx]
-		if isMultiGang(device.Category) && device.ID != "" {
+		if IsMultiGang(device.Category) && device.ID != "" {
 			targets = append(targets, device)
 		}
 	}

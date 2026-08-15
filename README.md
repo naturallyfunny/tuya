@@ -268,6 +268,10 @@ channels, err := c.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, i
 devices, err := c.SpaceDevices(ctx, []int64{spaceID}, true, nil, nil, "", 20)
 ```
 
+`DeviceChannelNames` is worth a request only for devices that have several channels.
+`appaccount.IsMultiGang(category)` is the same judgement `ListDevices` makes internally, exported
+so you can ask it before spending the request — it reads category `kg` and the `cz*` family.
+
 > `tuya.Client` knows nothing about owners. A holder can reach every device in the project.
 > That is the point — the doors tell you whose a handle is, and you decide what follows.
 
@@ -546,7 +550,9 @@ Each one is a domain or usage constraint, not an oversight.
   are the multi-gang ones — an opinion about Tuya's catalogue, not something its API states.
   What the root offers instead is the primitive: `DeviceChannelNames` wraps
   `GET /v1.0/devices/{id}/multiple-names` and nothing more; `appaccount.Service` fans it out
-  across the devices it judges worth labelling.
+  across the devices it judges worth labelling. That judgement is exported as
+  `appaccount.IsMultiGang` — the door already acts on it, so the opinion is public either way,
+  and a caller who wants the primitive should be able to ask the same question first.
 
   The **field** followed the behavior, one release late. The old `Device` type carried a
   `CodeNameMapping` slot that no Tuya response ever filled — only `resolveChannelNames` wrote to
@@ -592,7 +598,7 @@ Each one is a domain or usage constraint, not an oversight.
 - **The device types are a subset of the wire, and the line is identity over presentation.**
   Both listings send around twenty fields. The types keep seven and eight of them: the device's
   own identifiers, the two flags and the `status` that would otherwise cost one request per
-  device to recover, and the `category` that `isMultiGang` reads. `product_id` stays because it
+  device to recover, and the `category` that `IsMultiGang` reads. `product_id` stays because it
   is an identifier and because `SpaceDevices` takes `product_ids` as a filter — a field this
   package asks for on the way in has to be available on the way out.
 

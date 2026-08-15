@@ -22,7 +22,7 @@ client.go       Client: token cache/refresh, HMAC-SHA256, Do + retry-on-1010. Ta
 auth.go         Signing (token-request vs business-request beda) + token lifecycle.
 device.go       Tipe domain + method 1:1 endpoint. space.go idem (helper satu-satunya: listQuery).
 appaccount/     Pintu app-account utuh: tipe, error, Store + Client interface, Service,
-                + isMultiGang (kategori kg/cz*) dan resolveChannelNames (fan-out + errors.Join).
+                + IsMultiGang (kategori kg/cz*, publik) dan resolveChannelNames (fan-out + errors.Join).
 spatial/        Pintu spatial, pola sama: resolve → assertSpaceOwned → delegate.
                 ID 0 = space owner, bukan top level project.
 postgres/       app_account.go (+ Querier, Option/WithAutoMigrate, migrate), spatial.go,
