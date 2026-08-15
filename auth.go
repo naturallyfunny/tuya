@@ -47,16 +47,6 @@ func hmacSign(accessID, accessSecret, accessToken, method, path string, body []b
 	}, nil
 }
 
-func (c *Client) signBusinessRequest(method, path string, body []byte) (*signature, error) {
-	var accessToken string
-	c.tokenLock.RLock()
-	if c.token != nil {
-		accessToken = c.token.AccessToken
-	}
-	c.tokenLock.RUnlock()
-	return hmacSign(c.accessID, c.accessSecret, accessToken, method, path, body)
-}
-
 func (c *Client) setAuthHeaders(req *http.Request, sig *signature) {
 	req.Header.Set("client_id", c.accessID)
 	req.Header.Set("sign", sig.Sign)

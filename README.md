@@ -746,9 +746,11 @@ and a behavior file. The store adapters follow the same rule, which is why they 
 `app_account.go` and not `store.go`.
 
 ```
-client.go        tuya.Client: token cache/refresh, HMAC-SHA256 signing, Do + retry on 1010.
+client.go        tuya.Client: token cache/refresh, Do + retry on 1010, and the business-request
+                 signing that reads the cached token, beside the mutex guarding it.
                  No endpoints of its own.
-auth.go          request signing (token vs business requests differ) + token lifecycle.
+auth.go          the HMAC-SHA256 signer, the auth headers, and the token lifecycle. A token
+                 request is signed without a token; every other request carries one.
 device.go        UserDevice/SpaceDevice/DataPoint/Channel, one type per endpoint + its method.
 space.go         Space/Resource/Page + one method per space endpoint.
 appaccount/

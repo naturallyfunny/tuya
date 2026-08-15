@@ -67,6 +67,16 @@ type response struct {
 	Msg     string          `json:"msg"`
 }
 
+func (c *Client) signBusinessRequest(method, path string, body []byte) (*signature, error) {
+	var accessToken string
+	c.tokenLock.RLock()
+	if c.token != nil {
+		accessToken = c.token.AccessToken
+	}
+	c.tokenLock.RUnlock()
+	return hmacSign(c.accessID, c.accessSecret, accessToken, method, path, body)
+}
+
 func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
 	const maxIoTRequestAttempts = 2
 	for attempt := range maxIoTRequestAttempts {
