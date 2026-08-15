@@ -54,6 +54,8 @@ type SpaceDevice struct {
 	IsOnline    bool   `json:"isOnline"`
 }
 
+const SpaceDevicePageSizeMax = 20
+
 func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
 	ids := make([]string, len(spaceIDs))
 	for i, id := range spaceIDs {
@@ -71,9 +73,10 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive b
 	if lastID != "" {
 		query.Set("last_id", lastID)
 	}
-	if pageSize != 0 {
-		query.Set("page_size", strconv.Itoa(pageSize))
+	if pageSize == 0 {
+		pageSize = SpaceDevicePageSizeMax
 	}
+	query.Set("page_size", strconv.Itoa(pageSize))
 	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", query.Encode())
 	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
