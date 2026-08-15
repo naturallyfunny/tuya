@@ -268,6 +268,13 @@ channels, err := c.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, i
 devices, err := c.SpaceDevices(ctx, []int64{spaceID}, true, nil, nil, "", 20)
 ```
 
+`SpaceDevices` returns only the devices bound to the space IDs you name. The `recursive`
+argument is Tuya's `is_recursion`, and on 15 August 2026 it had no effect we could observe:
+a device bound to a space stayed invisible from that space's parent and from the root, and
+asking with `true` or `false` at the space itself returned the same list. The parameter is
+passed through as Tuya documents it, but do not plan a subtree walk on it — `SpaceResources`
+*is* transitive, and that is what `spatial.ContainsDevice` scans.
+
 `DeviceChannelNames` is worth a request only for devices that have several channels.
 `appaccount.IsMultiGang(category)` is the same judgement `ListDevices` makes internally, exported
 so you can ask it before spending the request — it reads category `kg` and the `cz*` family.
@@ -486,6 +493,18 @@ Each one is a domain or usage constraint, not an oversight.
   type travels both ways, a zero field is simply not sent, and the page you get is the page you
   pass to get the one after it — once you have checked its `LastRowKey` is not zero, because a
   zero cursor means the walk is over, not that it should start again.
+
+  `SpaceDevices` stands outside this, and the reason is Tuya's rather than ours. Tested against
+  the Singapore data center on 15 August 2026: the `thing/space/device` response envelope holds
+  only `success`, `t`, `tid` and `result`, and `result` is a bare array. **There is no cursor to
+  hand back** — returning a `Page` there would mean inventing one. Its cursor is `last_id`, the
+  ID of the last device you received, and it is exclusive; an ID the space does not hold is
+  rejected with `40000903`. The walk ends on an **empty** page, not a short one: six devices at
+  `page_size=2` came back as 2, 2, 2 and then `[]`. A full page never means there is another,
+  and a caller who stops early on a short page is relying on something the API never promised.
+  `page_size` itself is mandatory — omit it and Tuya answers `1110` — and caps at 20, so
+  `SpaceDevices` sends `SpaceDevicePageSizeMax` when you pass 0 rather than shipping a request
+  that is certain to be refused.
 
 - **Query parameters are snake_case, and the query string is always ASCII-sorted.**
   Tuya's reference tables say `only_sub`, `last_row_key`, `page_size`, `space_id`; its example

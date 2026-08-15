@@ -69,7 +69,7 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
 
 ## Design Decisions — yang mudah "dibersihkan" lalu rusak diam-diam
 
-- **Dua jalur refresh token, jangan disatukan** (dijaga `cloud/client_test.go`). `ensureValidToken`
+- **Dua jalur refresh token, jangan disatukan** (dijaga `client_test.go`). `ensureValidToken`
   (lazy) percaya expiry cache; `forceRefreshToken` (reaktif, saat Tuya balas 1010) mengabaikannya —
   Tuya otoritas atas tokennya. Disatukan = retry mati: reaktif return nil, token ditolak dipakai ulang.
 - **`cloud.Client` = satu method satu endpoint, kecuali `Do`/token/retry — dijaga disiplin, bukan
@@ -122,7 +122,7 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   belum dibungkus, tanpa guard. Dan **`resolveChannelNames` pakai `sync.WaitGroup.Go` +
   `errors.Join`, bukan `errgroup`** — collect-all vs fail-fast, kontrak berbeda bukan cleanup.
 
-## Fakta API — doc Tuya kontradiktif, ini hasil uji sungguhan (DC Singapore, 7–8 Agustus 2026)
+## Fakta API — doc Tuya kontradiktif, ini hasil uji sungguhan (DC Singapore, 7–8 & 15 Agustus 2026)
 
 1. **Query param selalu snake_case; casing response beda per endpoint.** `pageSize=3` **diabaikan
    diam-diam** (default 200) tanpa error. `thing/space/device` camelCase; device detail & `space/*` snake.
@@ -136,6 +136,14 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
    owner ditolak dari space-nya sendiri. Space project lain **error** `40001900` → `spatial.ErrNotOwned`.
 6. **Query param wajib urut ASCII**, kalau tidak `1004 sign invalid`. Semua query dibangun lewat
    `url.Values.Encode()` yang mengurutkan sendiri — jangan merakit query string dengan tangan.
+7. **`thing/space/device` paging-nya lain sendiri.** Envelope cuma `success/t/tid/result` dan
+   `result` array telanjang — **tak ada cursor untuk dikembalikan**, makanya tanpa `Page`. Cursornya
+   `last_id` = id device terakhir, **eksklusif**; ngawur → `40000903`. Habis = **halaman kosong**,
+   bukan halaman pendek (6 device @ 2 → 2,2,2,`[]`). `page_size` **wajib** (hilang → `1110`) dan
+   maks 20 (`21` → `40000904`), karena itu `SpaceDevicePageSizeMax` dipakai saat argumennya 0.
+8. **`is_recursion` tidak berefek**; `SpaceResources` justru transitif. Device ber-`bindSpaceId` X
+   tak terlihat dari induk X maupun root, dan di X sendiri `true`/`false` sama saja — sementara
+   `space/{id}/resource` melaporkan device milik cucunya. Itu pijakan `ContainsDevice`.
 
 ## Conventions
 
