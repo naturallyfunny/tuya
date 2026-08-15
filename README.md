@@ -746,6 +746,11 @@ and running both stores against a real database or the Firestore emulator is on 
   existing database recorded the old flat versions, so the new ones read as unapplied and run
   again — each is a `CREATE TABLE IF NOT EXISTS`, a no-op on a table that is already there. The
   new version rows land beside the old ones, which are then dead but harmless.
+- **Fixed in v0.8.0: `SpaceDevices` with `pageSize` 0.** The parameter used to be dropped from
+  the query, and `thing/space/device` rejects a request without `page_size` outright with
+  `1110 illegal param` — so that argument named a value that could never work. It now stands
+  for `SpaceDevicePageSizeMax`, the 20 the endpoint caps at. Callers already passing a size are
+  unaffected.
 - **Breaking in v0.7.0: identifiers are plain `string` and `int64`.** `SpaceID`, `Scope` and its
   `DirectChildren` / `Subtree` constants are gone; listings take `only_sub` as a `bool`
   (`DirectChildren` → `true`, `Subtree` → `false`). Stored data and DB columns are untouched.
