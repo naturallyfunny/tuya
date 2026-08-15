@@ -18,7 +18,7 @@ type Client struct {
 	accessSecret string
 	baseURL      string
 	httpClient   *http.Client
-	token        *token
+	accessToken  string
 	tokenLock    sync.RWMutex
 }
 
@@ -74,11 +74,8 @@ func (c *Client) refreshToken(ctx context.Context) error {
 }
 
 func (c *Client) signBusinessRequest(method, path string, body []byte) (*signature, error) {
-	var accessToken string
 	c.tokenLock.RLock()
-	if c.token != nil {
-		accessToken = c.token.AccessToken
-	}
+	accessToken := c.accessToken
 	c.tokenLock.RUnlock()
 	return hmacSign(c.accessID, c.accessSecret, accessToken, method, path, body)
 }

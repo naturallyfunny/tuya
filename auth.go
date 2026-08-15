@@ -56,12 +56,6 @@ func (c *Client) setAuthHeaders(req *http.Request, sig *signature) {
 	req.Header.Set("nonce", sig.Nonce)
 }
 
-type token struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	UID          string `json:"uid"`
-}
-
 func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	const path = "/v1.0/token?grant_type=1"
 	fullURL := c.baseURL + path
@@ -101,10 +95,12 @@ func (c *Client) updateToken(ctx context.Context) error {
 	if !resp.Success {
 		return fmt.Errorf("tuya token request failed with code %d: %s", resp.Code, resp.Msg)
 	}
-	var newToken token
-	if err := json.Unmarshal(resp.Result, &newToken); err != nil {
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return fmt.Errorf("failed to unmarshal token result: %w", err)
 	}
-	c.token = &newToken
+	c.accessToken = result.AccessToken
 	return nil
 }
