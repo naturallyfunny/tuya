@@ -47,10 +47,6 @@ func hmacSign(accessID, accessSecret, accessToken, method, path string, body []b
 	}, nil
 }
 
-func (c *Client) signTokenRequest(method, path string, body []byte) (*signature, error) {
-	return hmacSign(c.accessID, c.accessSecret, "", method, path, body)
-}
-
 func (c *Client) signBusinessRequest(method, path string, body []byte) (*signature, error) {
 	var accessToken string
 	c.tokenLock.RLock()
@@ -61,15 +57,8 @@ func (c *Client) signBusinessRequest(method, path string, body []byte) (*signatu
 	return hmacSign(c.accessID, c.accessSecret, accessToken, method, path, body)
 }
 
-type token struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpireTime   int64  `json:"expire_time"`
-	UID          string `json:"uid"`
-}
-
-func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
-	req.Header.Set("client_id", accessID)
+func (c *Client) setAuthHeaders(req *http.Request, sig *signature) {
+	req.Header.Set("client_id", c.accessID)
 	req.Header.Set("sign", sig.Sign)
 	req.Header.Set("t", sig.Timestamp)
 	req.Header.Set("sign_method", sig.SignMethod)
@@ -80,7 +69,7 @@ func setAuthHeaders(req *http.Request, accessID string, sig *signature) {
 func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	const path = "/v1.0/token?grant_type=1"
 	fullURL := c.baseURL + path
-	sig, err := c.signTokenRequest(http.MethodGet, path, nil)
+	sig, err := hmacSign(c.accessID, c.accessSecret, "", http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token signature: %w", err)
 	}
@@ -88,7 +77,7 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request to %s: %w", fullURL, err)
 	}
-	setAuthHeaders(httpReq, c.accessID, sig)
+	c.setAuthHeaders(httpReq, sig)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("token request to %s failed: %w", fullURL, err)
@@ -108,13 +97,20 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	return &tuyaResp, nil
 }
 
+type token struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpireTime   int64  `json:"expire_time"`
+	UID          string `json:"uid"`
+}
+
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("Tuya token request failed with code %d: %s", resp.Code, resp.Msg)
+		return fmt.Errorf("tuya token request failed with code %d: %s", resp.Code, resp.Msg)
 	}
 	var newToken token
 	if err := json.Unmarshal(resp.Result, &newToken); err != nil {

@@ -83,7 +83,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		if len(body) > 0 {
 			httpReq.Header.Set("Content-Type", "application/json")
 		}
-		setAuthHeaders(httpReq, c.accessID, sig)
+		c.setAuthHeaders(httpReq, sig)
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("request to %s failed: %w", fullURL, err)
