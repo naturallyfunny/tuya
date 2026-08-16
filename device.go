@@ -20,7 +20,7 @@ type DataPoint struct {
 type Device struct {
 	ID       string `json:"id"`
 	Category string `json:"category"`
-	// Channels is empty unless the call asked for WithChannelNames, and empty for a single-channel device even then.
+	// Channels is empty unless the call asked for WithChannelNames, and it is of course empty for a single-channel.
 	Channels []Channel `json:"channels,omitempty"`
 }
 
@@ -30,16 +30,13 @@ type deviceOptions struct {
 	channelNames bool
 }
 
-// WithChannelNames fills Channels on every multi-channel device in the answer, at one extra
-// request each. A listing of n devices costs 1 + however many of them can carry channels.
 func WithChannelNames() DeviceOption {
 	return func(o *deviceOptions) { o.channelNames = true }
 }
 
 type UserDevice struct {
 	Device
-	// Name here is what the user renamed the device to; SpaceDevice.Name is the factory name
-	// and puts the rename in CustomName instead.
+	// Name here is what the user renamed the device to; SpaceDevice.Name is the factory name and puts the rename in CustomName instead.
 	Name      string      `json:"name"`
 	ProductID string      `json:"product_id"`
 	Sub       bool        `json:"sub"`
@@ -78,13 +75,11 @@ func (c *Client) UserDevices(ctx context.Context, tuyaUID string, opts ...Device
 
 type SpaceDevice struct {
 	Device
-	// Name here is the factory name; the user's rename is CustomName. UserDevice.Name is the
-	// other way round.
+	// Name here is the factory name; the user's rename is CustomName. UserDevice.Name is the other way round.
 	Name       string `json:"name"`
 	CustomName string `json:"customName"`
 	ProductID  string `json:"productId"`
-	// BindSpaceID is which of the requested spaces the device sits in. Arrives as a string
-	// even though every other space id in this API is a number.
+	// BindSpaceID is which of the requested spaces the device sits in. Arrives as a string even though every other space id in this API is a number.
 	BindSpaceID string `json:"bindSpaceId"`
 	Sub         bool   `json:"sub"`
 	IsOnline    bool   `json:"isOnline"`
@@ -171,25 +166,6 @@ func (c *Client) SendCommands(ctx context.Context, deviceID string, commands []D
 	return nil
 }
 
-type Channel struct {
-	Identifier string `json:"identifier"`
-	Name       string `json:"name"`
-}
-
-func (c *Client) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
-	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
-	if err != nil {
-		return nil, err
-	}
-	var channels []Channel
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &channels); err != nil {
-			return nil, fmt.Errorf("failed to decode channels for device %s: %w", deviceID, err)
-		}
-	}
-	return channels, nil
-}
-
 func (c *Client) UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error) {
 	devices, err := c.UserDevices(ctx, tuyaUID)
 	if err != nil {
@@ -203,56 +179,29 @@ func (c *Client) UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (b
 	return false, nil
 }
 
-func canHaveMultipleChannels(category string) bool {
-	switch strings.ToLower(category) {
-	case DeviceCategorySwitch,
-		DeviceCategorySocket,
-		DeviceCategoryPowerStrip,
-		DeviceCategoryTDQ,
-		DeviceCategoryIrrigator,
-		DeviceCategorySceneSwitch,
-		DeviceCategoryGarageDoorOpener,
-		DeviceCategoryTemperatureHumiditySwitch,
-		DeviceCategoryDimmerSwitch,
-		DeviceCategoryDimmer,
-		DeviceCategoryCurtain,
-		DeviceCategoryCurtainSwitch,
-		DeviceCategoryWirelessSwitch:
-		return true
-	}
-	return false
-}
+const (
+	deviceScanMaxPages = 50
+	deviceScanPageSize = 200
+)
 
-func (c *Client) ChannelNames(ctx context.Context, devices []Device) (map[string][]Channel, error) {
-	var targets []string
-	for _, device := range devices {
-		if device.ID != "" && canHaveMultipleChannels(device.Category) {
-			targets = append(targets, device.ID)
+func (c *Client) SpaceHasDevice(ctx context.Context, spaceID int64, deviceID string) (bool, error) {
+	page := Page{PageSize: deviceScanPageSize}
+	for range deviceScanMaxPages {
+		resources, next, err := c.SpaceResources(ctx, spaceID, false, page)
+		if err != nil {
+			return false, fmt.Errorf("scan resources of space %d: %w", spaceID, err)
 		}
-	}
-	var (
-		mu    sync.Mutex
-		wg    sync.WaitGroup
-		named = make(map[string][]Channel, len(targets))
-		errs  []error
-	)
-	for _, deviceID := range targets {
-		wg.Go(func() {
-			channels, err := c.DeviceChannelNames(ctx, deviceID)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs = append(errs, fmt.Errorf("device %s: %w", deviceID, err))
-				return
+		for _, resource := range resources {
+			if resource.Type == SpaceResourceDevice && resource.ID == deviceID {
+				return true, nil
 			}
-			if channels == nil {
-				return
-			}
-			named[deviceID] = channels
-		})
+		}
+		if len(resources) == 0 || next.LastRowKey == 0 || next.LastRowKey == page.LastRowKey {
+			return false, nil
+		}
+		page.LastRowKey = next.LastRowKey
 	}
-	wg.Wait()
-	return named, errors.Join(errs...)
+	return false, fmt.Errorf("scan resources of space %d: did not end after %d pages", spaceID, deviceScanMaxPages)
 }
 
 const (
@@ -391,3 +340,74 @@ const (
 	DeviceCategoryWiFiIRRemote                       = "wnykq"
 	DeviceCategoryWirelessSwitch                     = "wxkg"
 )
+
+type Channel struct {
+	Identifier string `json:"identifier"`
+	Name       string `json:"name"`
+}
+
+func (c *Client) DeviceChannelNames(ctx context.Context, deviceID string) ([]Channel, error) {
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/devices/%s/multiple-names", deviceID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var channels []Channel
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &channels); err != nil {
+			return nil, fmt.Errorf("failed to decode channels for device %s: %w", deviceID, err)
+		}
+	}
+	return channels, nil
+}
+
+func canHaveMultipleChannels(category string) bool {
+	switch strings.ToLower(category) {
+	case DeviceCategorySwitch,
+		DeviceCategorySocket,
+		DeviceCategoryPowerStrip,
+		DeviceCategoryTDQ,
+		DeviceCategoryIrrigator,
+		DeviceCategorySceneSwitch,
+		DeviceCategoryGarageDoorOpener,
+		DeviceCategoryTemperatureHumiditySwitch,
+		DeviceCategoryDimmerSwitch,
+		DeviceCategoryDimmer,
+		DeviceCategoryCurtain,
+		DeviceCategoryCurtainSwitch,
+		DeviceCategoryWirelessSwitch:
+		return true
+	}
+	return false
+}
+
+func (c *Client) ChannelNames(ctx context.Context, devices []Device) (map[string][]Channel, error) {
+	var targets []string
+	for _, device := range devices {
+		if device.ID != "" && canHaveMultipleChannels(device.Category) {
+			targets = append(targets, device.ID)
+		}
+	}
+	var (
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		named = make(map[string][]Channel, len(targets))
+		errs  []error
+	)
+	for _, deviceID := range targets {
+		wg.Go(func() {
+			channels, err := c.DeviceChannelNames(ctx, deviceID)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("device %s: %w", deviceID, err))
+				return
+			}
+			if channels == nil {
+				return
+			}
+			named[deviceID] = channels
+		})
+	}
+	wg.Wait()
+	return named, errors.Join(errs...)
+}

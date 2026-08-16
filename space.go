@@ -31,18 +31,6 @@ type Page struct {
 	PageSize   int   `json:"page_size"`
 }
 
-func listQuery(onlySub bool, page Page) url.Values {
-	query := url.Values{}
-	query.Set("only_sub", strconv.FormatBool(onlySub))
-	if page.LastRowKey != 0 {
-		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
-	}
-	if page.PageSize != 0 {
-		query.Set("page_size", strconv.Itoa(page.PageSize))
-	}
-	return query
-}
-
 func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
 	body, err := json.Marshal(struct {
 		Name        string `json:"name"`
@@ -66,8 +54,7 @@ func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, d
 var ErrSpaceNotFound = errors.New("tuya: space not found")
 
 func (c *Client) Space(ctx context.Context, id int64) (Space, error) {
-	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/space/%d", id), nil)
 	if err != nil {
 		return Space{}, err
 	}
@@ -84,7 +71,6 @@ func (c *Client) Space(ctx context.Context, id int64) (Space, error) {
 var ErrNotApplied = errors.New("tuya: operation was not applied")
 
 func (c *Client) ModifySpace(ctx context.Context, id int64, name, description string) error {
-	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
 	body, err := json.Marshal(struct {
 		Name        string `json:"name,omitempty"`
 		Description string `json:"description,omitempty"`
@@ -92,7 +78,7 @@ func (c *Client) ModifySpace(ctx context.Context, id int64, name, description st
 	if err != nil {
 		return fmt.Errorf("failed to marshal space payload: %w", err)
 	}
-	raw, err := c.Do(ctx, http.MethodPut, path, body)
+	raw, err := c.Do(ctx, http.MethodPut, fmt.Sprintf("/v2.0/cloud/space/%d", id), body)
 	if err != nil {
 		return err
 	}
@@ -109,8 +95,7 @@ func (c *Client) ModifySpace(ctx context.Context, id int64, name, description st
 }
 
 func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
-	path := fmt.Sprintf("/v2.0/cloud/space/%d", id)
-	raw, err := c.Do(ctx, http.MethodDelete, path, nil)
+	raw, err := c.Do(ctx, http.MethodDelete, fmt.Sprintf("/v2.0/cloud/space/%d", id), nil)
 	if err != nil {
 		return err
 	}
@@ -126,9 +111,21 @@ func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
 	return nil
 }
 
+func query(onlySub bool, page Page) url.Values {
+	query := url.Values{}
+	query.Set("only_sub", strconv.FormatBool(onlySub))
+	if page.LastRowKey != 0 {
+		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
+	}
+	if page.PageSize != 0 {
+		query.Set("page_size", strconv.Itoa(page.PageSize))
+	}
+	return query
+}
+
 func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
-	path := fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, listQuery(onlySub, page).Encode())
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	query := query(onlySub, page).Encode()
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, query), nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
@@ -145,12 +142,11 @@ func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, pag
 }
 
 func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
-	query := listQuery(onlySub, page)
+	query := query(onlySub, page)
 	if id != 0 {
 		query.Set("space_id", strconv.FormatInt(id, 10))
 	}
-	path := fmt.Sprintf("/v2.0/cloud/space/child?%s", query.Encode())
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/child?"+query.Encode(), nil)
 	if err != nil {
 		return nil, Page{}, err
 	}
@@ -170,8 +166,7 @@ func (c *Client) SpaceRelation(ctx context.Context, parent, child int64) (bool, 
 	query := url.Values{}
 	query.Set("parent_id", strconv.FormatInt(parent, 10))
 	query.Set("child_id", strconv.FormatInt(child, 10))
-	path := fmt.Sprintf("/v2.0/cloud/space/relation?%s", query.Encode())
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/relation?"+query.Encode(), nil)
 	if err != nil {
 		return false, err
 	}

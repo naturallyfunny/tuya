@@ -132,6 +132,60 @@ func TestUserHasDevicePresent(t *testing.T) {
 	}
 }
 
+func TestSpaceHasDevicePresent(t *testing.T) {
+	client, stub := newSpaceClient(t, `{"data":[{"res_id":"dev-1","res_type":0}]}`)
+	ok, err := client.SpaceHasDevice(context.Background(), 42, "dev-1")
+	if err != nil {
+		t.Fatalf("SpaceHasDevice: unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("SpaceHasDevice: got false for a device the space reports")
+	}
+	if len(stub.calls()) != 1 {
+		t.Errorf("got %d requests, want 1: the device is on the first page", len(stub.calls()))
+	}
+}
+
+func TestSpaceHasDeviceAbsentIsFalseNotError(t *testing.T) {
+	client, _ := newSpaceClient(t, `{"data":[{"res_id":"someone-elses-device","res_type":0}]}`)
+	ok, err := client.SpaceHasDevice(context.Background(), 42, "dev-1")
+	if err != nil {
+		t.Fatalf("SpaceHasDevice: got error %v, want a plain false", err)
+	}
+	if ok {
+		t.Error("SpaceHasDevice: got true for a device the space does not report")
+	}
+}
+
+func TestSpaceHasDeviceGivesUpRatherThanPageForever(t *testing.T) {
+	var pages int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/v1.0/token") {
+			fmt.Fprint(w, `{"success":true,"t":1,"result":{"access_token":"tok","expire_time":7200}}`)
+			return
+		}
+		pages++
+		fmt.Fprintf(w, `{"success":true,"t":1,"result":{"data":[{"res_id":"dev-other","res_type":0}],"last_row_key":%d}}`, pages)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New("access-id", "access-secret", server.URL, WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New: unexpected error: %v", err)
+	}
+
+	ok, err := client.SpaceHasDevice(context.Background(), 42, "dev-absent")
+	if err == nil {
+		t.Fatal("SpaceHasDevice: got nil error, want the scan to give up")
+	}
+	if ok {
+		t.Error("SpaceHasDevice: got true alongside an error")
+	}
+	if pages != deviceScanMaxPages {
+		t.Errorf("read %d pages, want the scan capped at %d", pages, deviceScanMaxPages)
+	}
+}
+
 func TestUserDevicesCostsOneRequestWithoutTheOption(t *testing.T) {
 	client, stub := newSpaceClient(t, `[{"id":"switch-1","category":"kg"}]`)
 	devices, err := client.UserDevices(context.Background(), "uid-1")
