@@ -12,7 +12,7 @@ import (
 
 func TestSpaceDevicesAlwaysSendsAPageSize(t *testing.T) {
 	client, stub := newSpaceClient(t, `[]`)
-	if _, err := client.SpaceDevices(context.Background(), []int64{1}, true, nil, nil, "", 0); err != nil {
+	if _, err := client.SpaceDevices(context.Background(), []int64{1}, 0, true, nil, nil, ""); err != nil {
 		t.Fatalf("SpaceDevices: unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -27,7 +27,7 @@ func TestSpaceDevicesAlwaysSendsAPageSize(t *testing.T) {
 
 func TestSpaceDevicesKeepsTheRequestedPageSize(t *testing.T) {
 	client, stub := newSpaceClient(t, `[]`)
-	if _, err := client.SpaceDevices(context.Background(), []int64{1}, true, nil, nil, "", 5); err != nil {
+	if _, err := client.SpaceDevices(context.Background(), []int64{1}, 5, true, nil, nil, ""); err != nil {
 		t.Fatalf("SpaceDevices: unexpected error: %v", err)
 	}
 	if got := stub.calls()[0].query.Get("page_size"); got != "5" {

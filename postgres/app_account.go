@@ -1,6 +1,6 @@
-// Package postgres stores the links the appaccount and spatial doors depend on,
-// implementing appaccount.Store and spatial.Store over PostgreSQL. It is a
-// persistence layer only: it never talks to Tuya and holds no ownership rules.
+// Package postgres stores the links a door depends on, implementing
+// appaccount.Store over PostgreSQL. It is a persistence layer only: it never
+// talks to Tuya and holds no ownership rules.
 package postgres
 
 import (

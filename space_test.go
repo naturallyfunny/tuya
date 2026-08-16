@@ -95,35 +95,35 @@ func TestSpaceDecodesTheLiveFieldNames(t *testing.T) {
 
 func TestSpaceResourcesDecodesTheLiveFieldNames(t *testing.T) {
 	iot, _ := newSpaceClient(t, `{"last_row_key":2036356138623278,"data":[{"res_type":0,"res_id":"vdevo-1"}],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
+	resources, lastRowKey, err := iot.SpaceResources(context.Background(), 15, false, 0, 0)
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
 	if len(resources) != 1 || resources[0].ID != "vdevo-1" || resources[0].Type != SpaceResourceDevice {
 		t.Errorf("resources = %+v, want one device vdevo-1", resources)
 	}
-	if page.LastRowKey != 2036356138623278 || page.PageSize != 3 {
-		t.Errorf("page = %+v, want cursor 2036356138623278 and size 3", page)
+	if lastRowKey != 2036356138623278 {
+		t.Errorf("cursor = %d, want 2036356138623278", lastRowKey)
 	}
 }
 
 func TestTheLastPageComesBackWithoutACursor(t *testing.T) {
 	iot, _ := newSpaceClient(t, `{"data":[],"page_size":3}`)
-	resources, page, err := iot.SpaceResources(context.Background(), 15, false, Page{})
+	resources, lastRowKey, err := iot.SpaceResources(context.Background(), 15, false, 0, 0)
 	if err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
 	if len(resources) != 0 {
 		t.Errorf("resources = %+v, want none", resources)
 	}
-	if page.LastRowKey != 0 {
-		t.Errorf("cursor = %d, want 0 so a walk can stop", page.LastRowKey)
+	if lastRowKey != 0 {
+		t.Errorf("cursor = %d, want 0 so a walk can stop", lastRowKey)
 	}
 }
 
 func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 	iot, stub := newSpaceClient(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.SpaceResources(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
+	if _, _, err := iot.SpaceResources(context.Background(), 15, false, 5, 100); err != nil {
 		t.Fatalf("SpaceResources: unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -147,7 +147,7 @@ func TestListingSendsTheParametersTuyaBinds(t *testing.T) {
 
 func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 	iot, stub := newSpaceClient(t, `{"data":[],"page_size":200}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 15, false, Page{PageSize: 100, LastRowKey: 5}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, false, 5, 100); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	raw := stub.calls()[0].rawQuery
@@ -158,7 +158,7 @@ func TestQueryParametersGoOutInASCIIOrder(t *testing.T) {
 
 func TestOnlySubNarrowsTheListing(t *testing.T) {
 	iot, stub := newSpaceClient(t, `{"data":[],"last_row_key":0,"page_size":200}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 15, true, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, true, 0, 0); err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -172,10 +172,10 @@ func TestOnlySubNarrowsTheListing(t *testing.T) {
 
 func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 	iot, stub := newSpaceClient(t, `{"data":[]}`)
-	if _, _, err := iot.ListSpaces(context.Background(), 0, true, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 0, true, 0, 0); err != nil {
 		t.Fatalf("ListSpaces(0): unexpected error: %v", err)
 	}
-	if _, _, err := iot.ListSpaces(context.Background(), 15, true, Page{}); err != nil {
+	if _, _, err := iot.ListSpaces(context.Background(), 15, true, 0, 0); err != nil {
 		t.Fatalf("ListSpaces(15): unexpected error: %v", err)
 	}
 	calls := stub.calls()
@@ -192,15 +192,15 @@ func TestTheZeroSpaceIDListsTheProjectTopLevel(t *testing.T) {
 
 func TestListSpacesDecodesIDList(t *testing.T) {
 	iot, _ := newSpaceClient(t, `{"last_row_key":15000003,"data":[15000002,15000003],"page_size":200}`)
-	ids, page, err := iot.ListSpaces(context.Background(), 15, true, Page{})
+	ids, lastRowKey, err := iot.ListSpaces(context.Background(), 15, true, 0, 0)
 	if err != nil {
 		t.Fatalf("ListSpaces: unexpected error: %v", err)
 	}
 	if len(ids) != 2 || ids[0] != 15000002 || ids[1] != 15000003 {
 		t.Errorf("ids = %v, want [15000002 15000003]", ids)
 	}
-	if page.LastRowKey != 15000003 {
-		t.Errorf("cursor = %d, want 15000003", page.LastRowKey)
+	if lastRowKey != 15000003 {
+		t.Errorf("cursor = %d, want 15000003", lastRowKey)
 	}
 }
 

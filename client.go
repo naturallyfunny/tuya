@@ -3,8 +3,8 @@
 // retries; every other method on it is one-to-one with a Tuya device or space
 // endpoint. Nothing here is a capability Tuya does not have natively.
 //
-// Packages appaccount and spatial build on this one for applications that carry
-// their own user identity; postgres and firestore store what those two need.
+// Package appaccount builds on this one for applications that carry their own
+// user identity; postgres and firestore store what it needs.
 package tuya
 
 import (
@@ -61,6 +61,8 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return fmt.Sprintf("tuya api error %d: %s", e.Code, e.Msg)
 }
+
+const CodeNoSpacePermission = 40001900
 
 type response struct {
 	Success bool            `json:"success"`

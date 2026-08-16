@@ -104,24 +104,6 @@ func TestAppAccountDocumentIsTheOwnerInItsCollection(t *testing.T) {
 	}
 }
 
-func TestEachDoorHasItsOwnCollection(t *testing.T) {
-	if DefaultAppAccountCollection == DefaultSpaceCollection {
-		t.Fatalf("both doors default to collection %q", DefaultAppAccountCollection)
-	}
-	client := offlineClient(t)
-	accounts, err := NewAppAccountStore(client).doc("owner-1")
-	if err != nil {
-		t.Fatalf("doc: unexpected error: %v", err)
-	}
-	spaces, err := NewSpaceStore(client).doc("owner-1")
-	if err != nil {
-		t.Fatalf("doc: unexpected error: %v", err)
-	}
-	if accounts.Path == spaces.Path {
-		t.Errorf("both doors write owner-1 to %s", accounts.Path)
-	}
-}
-
 func TestNewAppAccountStoreRejectsANilClient(t *testing.T) {
 	defer func() {
 		if recover() == nil {

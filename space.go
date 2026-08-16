@@ -17,20 +17,6 @@ type Space struct {
 	RootID   int64  `json:"root_id"`
 }
 
-type SpaceResourceType int
-
-const SpaceResourceDevice SpaceResourceType = 0
-
-type Resource struct {
-	ID   string            `json:"res_id"`
-	Type SpaceResourceType `json:"res_type"`
-}
-
-type Page struct {
-	LastRowKey int64 `json:"last_row_key"`
-	PageSize   int   `json:"page_size"`
-}
-
 func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, description string) (int64, error) {
 	body, err := json.Marshal(struct {
 		Name        string `json:"name"`
@@ -111,62 +97,73 @@ func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
 	return nil
 }
 
-func query(onlySub bool, page Page) url.Values {
-	query := url.Values{}
-	query.Set("only_sub", strconv.FormatBool(onlySub))
-	if page.LastRowKey != 0 {
-		query.Set("last_row_key", strconv.FormatInt(page.LastRowKey, 10))
-	}
-	if page.PageSize != 0 {
-		query.Set("page_size", strconv.Itoa(page.PageSize))
-	}
-	return query
+type SpaceResourceType int
+
+type Resource struct {
+	ID   string            `json:"res_id"`
+	Type SpaceResourceType `json:"res_type"`
 }
 
-func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, page Page) ([]Resource, Page, error) {
-	query := query(onlySub, page).Encode()
-	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, query), nil)
+func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, lastRowKey int64, pageSize int) ([]Resource, int64, error) {
+	params := url.Values{}
+	params.Set("only_sub", strconv.FormatBool(onlySub))
+	if lastRowKey != 0 {
+		params.Set("last_row_key", strconv.FormatInt(lastRowKey, 10))
+	}
+	if pageSize != 0 {
+		params.Set("page_size", strconv.Itoa(pageSize))
+	}
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/space/%d/resource?%s", id, params.Encode()), nil)
 	if err != nil {
-		return nil, Page{}, err
+		return nil, 0, err
 	}
 	var body struct {
-		Data []Resource `json:"data"`
-		Page
+		Data       []Resource `json:"data"`
+		LastRowKey int64      `json:"last_row_key"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, Page{}, fmt.Errorf("failed to unmarshal the resources of space %d: %w", id, err)
+			return nil, 0, fmt.Errorf("failed to unmarshal the resources of space %d: %w", id, err)
 		}
 	}
-	return body.Data, body.Page, nil
+	return body.Data, body.LastRowKey, nil
 }
 
-func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, page Page) ([]int64, Page, error) {
-	query := query(onlySub, page)
+const SpaceResourceDevice SpaceResourceType = 0
+
+func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, lastRowKey int64, pageSize int) ([]int64, int64, error) {
+	params := url.Values{}
 	if id != 0 {
-		query.Set("space_id", strconv.FormatInt(id, 10))
+		params.Set("space_id", strconv.FormatInt(id, 10))
 	}
-	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/child?"+query.Encode(), nil)
+	params.Set("only_sub", strconv.FormatBool(onlySub))
+	if lastRowKey != 0 {
+		params.Set("last_row_key", strconv.FormatInt(lastRowKey, 10))
+	}
+	if pageSize != 0 {
+		params.Set("page_size", strconv.Itoa(pageSize))
+	}
+	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/child?"+params.Encode(), nil)
 	if err != nil {
-		return nil, Page{}, err
+		return nil, 0, err
 	}
 	var body struct {
-		Data []int64 `json:"data"`
-		Page
+		Data       []int64 `json:"data"`
+		LastRowKey int64   `json:"last_row_key"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, Page{}, fmt.Errorf("failed to unmarshal space list: %w", err)
+			return nil, 0, fmt.Errorf("failed to unmarshal space list: %w", err)
 		}
 	}
-	return body.Data, body.Page, nil
+	return body.Data, body.LastRowKey, nil
 }
 
 func (c *Client) SpaceRelation(ctx context.Context, parent, child int64) (bool, error) {
-	query := url.Values{}
-	query.Set("parent_id", strconv.FormatInt(parent, 10))
-	query.Set("child_id", strconv.FormatInt(child, 10))
-	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/relation?"+query.Encode(), nil)
+	params := url.Values{}
+	params.Set("parent_id", strconv.FormatInt(parent, 10))
+	params.Set("child_id", strconv.FormatInt(child, 10))
+	raw, err := c.Do(ctx, http.MethodGet, "/v2.0/cloud/space/relation?"+params.Encode(), nil)
 	if err != nil {
 		return false, err
 	}

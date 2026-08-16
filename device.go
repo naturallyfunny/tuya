@@ -87,7 +87,7 @@ type SpaceDevice struct {
 
 const SpaceDevicePageSizeMax = 20
 
-func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int, opts ...DeviceOption) ([]SpaceDevice, error) {
+func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, pageSize int, recursive bool, productIDs, categories []string, lastID string, opts ...DeviceOption) ([]SpaceDevice, error) {
 	var options deviceOptions
 	for _, opt := range opts {
 		opt(&options)
@@ -96,23 +96,23 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive b
 	for i, id := range spaceIDs {
 		ids[i] = strconv.FormatInt(id, 10)
 	}
-	query := url.Values{}
-	query.Set("space_ids", strings.Join(ids, ","))
-	query.Set("is_recursion", strconv.FormatBool(recursive))
-	if len(productIDs) > 0 {
-		query.Set("product_ids", strings.Join(productIDs, ","))
-	}
-	if len(categories) > 0 {
-		query.Set("categories", strings.Join(categories, ","))
-	}
-	if lastID != "" {
-		query.Set("last_id", lastID)
-	}
 	if pageSize == 0 {
 		pageSize = SpaceDevicePageSizeMax
 	}
-	query.Set("page_size", strconv.Itoa(pageSize))
-	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", query.Encode())
+	params := url.Values{}
+	params.Set("space_ids", strings.Join(ids, ","))
+	params.Set("page_size", strconv.Itoa(pageSize))
+	params.Set("is_recursion", strconv.FormatBool(recursive))
+	if len(productIDs) > 0 {
+		params.Set("product_ids", strings.Join(productIDs, ","))
+	}
+	if len(categories) > 0 {
+		params.Set("categories", strings.Join(categories, ","))
+	}
+	if lastID != "" {
+		params.Set("last_id", lastID)
+	}
+	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", params.Encode())
 	raw, err := c.Do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive b
 	var devices []SpaceDevice
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &devices); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal the device list of spaces %s: %w", query.Get("space_ids"), err)
+			return nil, fmt.Errorf("failed to unmarshal the device list of spaces %s: %w", params.Get("space_ids"), err)
 		}
 	}
 	if options.channelNames {
@@ -185,9 +185,9 @@ const (
 )
 
 func (c *Client) SpaceHasDevice(ctx context.Context, spaceID int64, deviceID string) (bool, error) {
-	page := Page{PageSize: deviceScanPageSize}
+	var lastRowKey int64
 	for range deviceScanMaxPages {
-		resources, next, err := c.SpaceResources(ctx, spaceID, false, page)
+		resources, next, err := c.SpaceResources(ctx, spaceID, false, lastRowKey, deviceScanPageSize)
 		if err != nil {
 			return false, fmt.Errorf("scan resources of space %d: %w", spaceID, err)
 		}
@@ -196,10 +196,10 @@ func (c *Client) SpaceHasDevice(ctx context.Context, spaceID int64, deviceID str
 				return true, nil
 			}
 		}
-		if len(resources) == 0 || next.LastRowKey == 0 || next.LastRowKey == page.LastRowKey {
+		if len(resources) == 0 || next == 0 || next == lastRowKey {
 			return false, nil
 		}
-		page.LastRowKey = next.LastRowKey
+		lastRowKey = next
 	}
 	return false, fmt.Errorf("scan resources of space %d: did not end after %d pages", spaceID, deviceScanMaxPages)
 }
