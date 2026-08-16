@@ -68,8 +68,7 @@ Ready-made `appaccount.Store` implementations, or write your own — it's three 
 
 `postgres.AppAccountStore` uses a `tuya_app_accounts` table and ships embedded migrations;
 `WithAutoMigrate()` runs them at startup, otherwise it checks the schema and fails fast.
-`firestore.AppAccountStore` uses one document per owner in `tuya_app_accounts` (override with
-`WithCollection`), nothing to migrate.
+`firestore.AppAccountStore` uses one document per owner in `tuya_app_accounts`, nothing to migrate.
 
 Both treat `Link` as an upsert and `Unlink` as a soft delete, so relinking revives the record and an
 unlinked owner stays on file for audit.

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -17,105 +16,73 @@ import (
 	"go.naturallyfunny.dev/tuya/appaccount"
 )
 
-const DefaultAppAccountCollection = "tuya_app_accounts"
+const appAccountCollection = "tuya_app_accounts"
 
-type accountDoc struct {
+type account struct {
 	TuyaUID   string     `firestore:"tuya_uid"`
 	CreatedAt time.Time  `firestore:"created_at"`
 	UpdatedAt time.Time  `firestore:"updated_at"`
 	DeletedAt *time.Time `firestore:"deleted_at"`
 }
 
-func (d accountDoc) account(owner string) appaccount.Account {
-	return appaccount.Account{
-		Owner:     owner,
-		TuyaUID:   d.TuyaUID,
-		CreatedAt: d.CreatedAt,
-		UpdatedAt: d.UpdatedAt,
-	}
-}
-
 type AppAccountStore struct {
-	client     *firestore.Client
-	collection string
+	client *firestore.Client
 }
 
-type options struct {
-	collection string
-}
-
-type Option func(*options)
-
-func WithCollection(name string) Option {
-	return func(o *options) { o.collection = name }
-}
-
-func collectionOr(fallback string, opts []Option) string {
-	cfg := options{collection: fallback}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	if cfg.collection == "" {
-		return fallback
-	}
-	return cfg.collection
-}
-
-func NewAppAccountStore(client *firestore.Client, opts ...Option) *AppAccountStore {
+func NewAppAccountStore(client *firestore.Client) *AppAccountStore {
 	if client == nil {
 		panic("firestore: NewAppAccountStore called with nil client")
 	}
-	return &AppAccountStore{
-		client:     client,
-		collection: collectionOr(DefaultAppAccountCollection, opts),
-	}
+	return &AppAccountStore{client: client}
 }
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
-	ref, err := s.doc(owner)
-	if err != nil {
-		return appaccount.Account{}, err
-	}
-	snap, err := ref.Get(ctx)
+	snap, err := s.client.Collection(appAccountCollection).Doc(owner).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
 	if err != nil {
 		return appaccount.Account{}, fmt.Errorf("get account: %w", err)
 	}
-	var doc accountDoc
-	if err := snap.DataTo(&doc); err != nil {
+	var acc account
+	if err := snap.DataTo(&acc); err != nil {
 		return appaccount.Account{}, fmt.Errorf("get account: decode %q: %w", owner, err)
 	}
-	if doc.DeletedAt != nil {
+	if acc.DeletedAt != nil {
 		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
-	return doc.account(owner), nil
+	return appaccount.Account{
+		Owner:     owner,
+		TuyaUID:   acc.TuyaUID,
+		CreatedAt: acc.CreatedAt,
+		UpdatedAt: acc.UpdatedAt,
+	}, nil
 }
 
 func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appaccount.Account, error) {
-	ref, err := s.doc(owner)
-	if err != nil {
-		return appaccount.Account{}, err
-	}
+	ref := s.client.Collection(appAccountCollection).Doc(owner)
 	var acc appaccount.Account
-	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		now := time.Now().UTC()
-		doc := accountDoc{TuyaUID: tuyaUID, CreatedAt: now, UpdatedAt: now}
+		createdAt := now
 		snap, err := tx.Get(ref)
-		switch {
-		case status.Code(err) == codes.NotFound:
-		case err != nil:
+		if err != nil && status.Code(err) != codes.NotFound {
 			return err
-		default:
-			var prev accountDoc
+		}
+		if err == nil {
+			var prev account
 			if err := snap.DataTo(&prev); err != nil {
 				return fmt.Errorf("decode %q: %w", owner, err)
 			}
-			doc.CreatedAt = prev.CreatedAt
+			createdAt = prev.CreatedAt
 		}
-		acc = doc.account(owner)
-		return tx.Set(ref, doc)
+		acc = appaccount.Account{
+			Owner:     owner,
+			TuyaUID:   tuyaUID,
+			CreatedAt: createdAt,
+			UpdatedAt: now,
+		}
+		return tx.Set(ref, account{TuyaUID: tuyaUID, CreatedAt: createdAt, UpdatedAt: now})
 	})
 	if err != nil {
 		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
@@ -124,11 +91,8 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appa
 }
 
 func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
-	ref, err := s.doc(owner)
-	if err != nil {
-		return err
-	}
-	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+	ref := s.client.Collection(appAccountCollection).Doc(owner)
+	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(ref)
 		if status.Code(err) == codes.NotFound {
 			return appaccount.ErrNotLinked
@@ -136,11 +100,11 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 		if err != nil {
 			return err
 		}
-		var doc accountDoc
-		if err := snap.DataTo(&doc); err != nil {
+		var acc account
+		if err := snap.DataTo(&acc); err != nil {
 			return fmt.Errorf("decode %q: %w", owner, err)
 		}
-		if doc.DeletedAt != nil {
+		if acc.DeletedAt != nil {
 			return appaccount.ErrNotLinked
 		}
 		now := time.Now().UTC()
@@ -149,36 +113,8 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 			{Path: "updated_at", Value: now},
 		})
 	})
-	if errors.Is(err, appaccount.ErrNotLinked) {
-		return appaccount.ErrNotLinked
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, appaccount.ErrNotLinked) {
 		return fmt.Errorf("unlink account: %w", err)
 	}
-	return nil
+	return err
 }
-
-func (s *AppAccountStore) doc(owner string) (*firestore.DocumentRef, error) {
-	if err := validateOwner(owner); err != nil {
-		return nil, err
-	}
-	return s.client.Collection(s.collection).Doc(owner), nil
-}
-
-func validateOwner(owner string) error {
-	switch {
-	case owner == "":
-		return errors.New("firestore: owner is empty")
-	case owner == "." || owner == "..":
-		return fmt.Errorf("firestore: owner %q is a reserved document ID", owner)
-	case strings.Contains(owner, "/"):
-		return fmt.Errorf("firestore: owner %q contains '/', not allowed in a document ID", owner)
-	case len(owner) > 1500:
-		return fmt.Errorf("firestore: owner exceeds Firestore's 1500-byte document ID limit (%d bytes)", len(owner))
-	case len(owner) >= 4 && strings.HasPrefix(owner, "__") && strings.HasSuffix(owner, "__"):
-		return fmt.Errorf("firestore: owner %q matches Firestore's reserved __*__ document ID pattern", owner)
-	}
-	return nil
-}
-
-var _ appaccount.Store = (*AppAccountStore)(nil)
