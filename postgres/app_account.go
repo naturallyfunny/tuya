@@ -122,7 +122,7 @@ func NewAppAccountStore(ctx context.Context, db Querier, opts ...AppAccountStore
 	return store, nil
 }
 
-func scanAppAccount(row pgx.CollectableRow) (appaccount.Account, error) {
+func rowToAccount(row pgx.CollectableRow) (appaccount.Account, error) {
 	var acc appaccount.Account
 	if err := row.Scan(&acc.Owner, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
 		return appaccount.Account{}, err
@@ -138,7 +138,7 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Acc
 	if err != nil {
 		return appaccount.Account{}, fmt.Errorf("get account: %w", err)
 	}
-	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
+	acc, err := pgx.CollectOneRow(rows, rowToAccount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
@@ -160,7 +160,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string
 	if err != nil {
 		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
 	}
-	acc, err := pgx.CollectOneRow(rows, scanAppAccount)
+	acc, err := pgx.CollectOneRow(rows, rowToAccount)
 	if err != nil {
 		return appaccount.Account{}, fmt.Errorf("link account: %w", err)
 	}
