@@ -59,15 +59,15 @@ func (c *Client) UserDevices(ctx context.Context, tuyaUID string, opts ...Device
 	}
 	if options.channelNames {
 		base := make([]Device, len(devices))
-		for idx, device := range devices {
-			base[idx] = device.Device
+		for i, device := range devices {
+			base[i] = device.Device
 		}
 		named, err := c.ChannelNames(ctx, base)
 		if err != nil {
 			return nil, err
 		}
-		for idx := range devices {
-			devices[idx].Channels = named[devices[idx].ID]
+		for i := range devices {
+			devices[i].Channels = named[devices[i].ID]
 		}
 	}
 	return devices, nil
@@ -123,15 +123,15 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, pageSize in
 	}
 	if options.channelNames {
 		base := make([]Device, len(devices))
-		for idx, device := range devices {
-			base[idx] = device.Device
+		for i, device := range devices {
+			base[i] = device.Device
 		}
 		named, err := c.ChannelNames(ctx, base)
 		if err != nil {
 			return nil, err
 		}
-		for idx := range devices {
-			devices[idx].Channels = named[devices[idx].ID]
+		for i := range devices {
+			devices[i].Channels = named[devices[i].ID]
 		}
 	}
 	return devices, nil
