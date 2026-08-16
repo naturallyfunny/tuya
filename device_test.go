@@ -131,3 +131,51 @@ func TestUserHasDevicePresent(t *testing.T) {
 		t.Error("UserHasDevice: got false for a device the account lists")
 	}
 }
+
+func TestUserDevicesCostsOneRequestWithoutTheOption(t *testing.T) {
+	client, stub := newSpaceClient(t, `[{"id":"switch-1","category":"kg"}]`)
+	devices, err := client.UserDevices(context.Background(), "uid-1")
+	if err != nil {
+		t.Fatalf("UserDevices: unexpected error: %v", err)
+	}
+	if devices[0].Channels != nil {
+		t.Errorf("Channels = %+v, want nothing: the caller never asked", devices[0].Channels)
+	}
+	if len(stub.calls()) != 1 {
+		t.Errorf("got %d requests, want 1", len(stub.calls()))
+	}
+}
+
+func TestUserDevicesWithChannelNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1.0/token"):
+			fmt.Fprint(w, `{"success":true,"t":1,"result":{"access_token":"tok","expire_time":7200}}`)
+		case strings.HasSuffix(r.URL.Path, "/multiple-names"):
+			fmt.Fprint(w, `{"success":true,"t":1,"result":[{"identifier":"switch_1","name":"Kitchen"}]}`)
+		default:
+			fmt.Fprint(w, `{"success":true,"t":1,"result":[{"id":"switch-1","category":"kg"},{"id":"sensor-1","category":"wsdcg"}]}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := New("access-id", "access-secret", server.URL, WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatalf("New: unexpected error: %v", err)
+	}
+
+	devices, err := client.UserDevices(context.Background(), "uid-1", WithChannelNames())
+	if err != nil {
+		t.Fatalf("UserDevices: unexpected error: %v", err)
+	}
+	byID := map[string][]Channel{}
+	for _, device := range devices {
+		byID[device.ID] = device.Channels
+	}
+	if len(byID["switch-1"]) != 1 || byID["switch-1"][0].Name != "Kitchen" {
+		t.Errorf("switch-1 channels = %+v, want Kitchen", byID["switch-1"])
+	}
+	if byID["sensor-1"] != nil {
+		t.Errorf("sensor-1 channels = %+v, want nothing: it cannot carry channels", byID["sensor-1"])
+	}
+}

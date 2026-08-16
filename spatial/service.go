@@ -43,7 +43,7 @@ type Client interface {
 	DeleteSpace(ctx context.Context, id int64) error
 	ListSpaces(ctx context.Context, id int64, onlySub bool, page tuya.Page) ([]int64, tuya.Page, error)
 	SpaceResources(ctx context.Context, id int64, onlySub bool, page tuya.Page) ([]tuya.Resource, tuya.Page, error)
-	SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]tuya.SpaceDevice, error)
+	SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int, opts ...tuya.DeviceOption) ([]tuya.SpaceDevice, error)
 	SpaceRelation(ctx context.Context, parent, child int64) (bool, error)
 }
 

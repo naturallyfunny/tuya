@@ -38,7 +38,7 @@ type fakeClient struct {
 	channelIDs []string
 }
 
-func (f *fakeClient) UserDevices(_ context.Context, tuyaUID string) ([]tuya.UserDevice, error) {
+func (f *fakeClient) UserDevices(_ context.Context, tuyaUID string, _ ...tuya.DeviceOption) ([]tuya.UserDevice, error) {
 	f.listUIDs = append(f.listUIDs, tuyaUID)
 	out := make([]tuya.UserDevice, len(f.devices))
 	copy(out, f.devices)

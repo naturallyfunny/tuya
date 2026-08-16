@@ -17,11 +17,23 @@ type DataPoint struct {
 	Value any    `json:"value"`
 }
 
-// The two fields every device endpoint spells the same way. ProductID is not among them:
-// UserDevices returns product_id, thing/space/device returns productId.
 type Device struct {
 	ID       string `json:"id"`
 	Category string `json:"category"`
+	// Channels is empty unless the call asked for WithChannelNames, and empty for a single-channel device even then.
+	Channels []Channel `json:"channels,omitempty"`
+}
+
+type DeviceOption func(*deviceOptions)
+
+type deviceOptions struct {
+	channelNames bool
+}
+
+// WithChannelNames fills Channels on every multi-channel device in the answer, at one extra
+// request each. A listing of n devices costs 1 + however many of them can carry channels.
+func WithChannelNames() DeviceOption {
+	return func(o *deviceOptions) { o.channelNames = true }
 }
 
 type UserDevice struct {
@@ -35,7 +47,11 @@ type UserDevice struct {
 	Status    []DataPoint `json:"status"`
 }
 
-func (c *Client) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice, error) {
+func (c *Client) UserDevices(ctx context.Context, tuyaUID string, opts ...DeviceOption) ([]UserDevice, error) {
+	var options deviceOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v1.0/users/%s/devices", tuyaUID), nil)
 	if err != nil {
 		return nil, err
@@ -43,6 +59,19 @@ func (c *Client) UserDevices(ctx context.Context, tuyaUID string) ([]UserDevice,
 	var devices []UserDevice
 	if err := json.Unmarshal(raw, &devices); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal device list: %w", err)
+	}
+	if options.channelNames {
+		base := make([]Device, len(devices))
+		for idx, device := range devices {
+			base[idx] = device.Device
+		}
+		named, err := c.ChannelNames(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		for idx := range devices {
+			devices[idx].Channels = named[devices[idx].ID]
+		}
 	}
 	return devices, nil
 }
@@ -63,7 +92,11 @@ type SpaceDevice struct {
 
 const SpaceDevicePageSizeMax = 20
 
-func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int) ([]SpaceDevice, error) {
+func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive bool, productIDs, categories []string, lastID string, pageSize int, opts ...DeviceOption) ([]SpaceDevice, error) {
+	var options deviceOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	ids := make([]string, len(spaceIDs))
 	for i, id := range spaceIDs {
 		ids[i] = strconv.FormatInt(id, 10)
@@ -93,6 +126,19 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, recursive b
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &devices); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal the device list of spaces %s: %w", query.Get("space_ids"), err)
+		}
+	}
+	if options.channelNames {
+		base := make([]Device, len(devices))
+		for idx, device := range devices {
+			base[idx] = device.Device
+		}
+		named, err := c.ChannelNames(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		for idx := range devices {
+			devices[idx].Channels = named[devices[idx].ID]
 		}
 	}
 	return devices, nil

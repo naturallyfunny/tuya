@@ -43,6 +43,7 @@ app := appaccount.NewService(c, store) // postgres.NewAppAccountStore(ctx, pool,
 
 devices, err := app.ListDevices(ctx, owner)    // resolve owner→uid + channel-name
 ok, err := app.HasDevice(ctx, owner, deviceID) // pertanyaan, bukan vonis; consumer yang memutuskan
+all, err := c.UserDevices(ctx, uid, tuya.WithChannelNames()) // 1 + N request, N = yang multi-channel
 err = c.SendCommands(ctx, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
 
 // Pintu spatial sama, cuma store-nya beda. id 0 = space owner; onlySub true = anak langsung;
@@ -69,13 +70,14 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   lolos cek, jadi jalur reaktif tetap wajib), hemat satu request per dua jam, ditagih
   `tokenLock.Lock()` **eksklusif di tiap `Do`**. `Client` cuma simpan `accessToken`; sisanya
   mengundang cek itu tumbuh lagi.
-- **`tuya.Client` = satu method satu endpoint, kecuali `Do`/token/retry** — dijaga disiplin, bukan
-  batas tipe; facade `IoT` dicabut karena lapisan tanpa pekerjaan tak punya nama jujur, dan yang
-  membatasi `Do` itu konvensi pintu menerima interface lokal. **Nama tipe = nama method**; tipe
-  device subset wire (identitas bukan presentasi), komposisi milik pintu. Keep = identifier +
-  `status`/flag yang jadi N request kalau dibuang; `local_key` rahasia. **`Device` = `ID` +
-  `Category`** di-embed keduanya supaya `ChannelNames` melayani dua pohon — cuma itu yang dieja sama
-  (`ProductID` beda casing, `Name` beda **arti**, Fakta API 2); slice tak kovarian, pintu merakit.
+- **Method root default 1:1 endpoint; yang lebih wajib kelihatan ongkosnya di call site.** Aturan lama
+  "satu method satu endpoint, titik" dicabut — `ChannelNames`, `UserHasDevice`, `WithChannelNames` tak
+  satu pun bisa lahir di bawahnya. Fan-out boleh, **tersembunyi tidak**: option per-call, **bukan**
+  option `New()` yang bikin `UserDevices` diam-diam 1+N selamanya. **Nama tipe = nama method**; tipe
+  device subset wire, komposisi milik pintu; keep = identifier + `status`/flag yang jadi N request
+  kalau dibuang, `local_key` rahasia. **`Device` = `ID` + `Category` + `Channels`** di-embed keduanya:
+  cuma dua yang pertama dieja sama (`ProductID` beda casing, `Name` beda **arti**), `Channels` bukan
+  data wire dan kosong kalau tak diminta; slice tak kovarian, perakitnya bikin sendiri.
 - **Nama hanya boleh memuat kata yang kodenya cek atau lakukan** — owner bukan "tenant", space bukan
   "root". Tafsir bisnis boleh di prosa (README, doc comment), tak pernah di identifier, tabel, kolom.
 - **Wrapper tidak bikin vocabulary paralel.** Identifier Tuya telanjang: `string` untuk
@@ -85,9 +87,8 @@ hanya `.up.sql` dieksekusi, key `tuya_schema_migrations` = `<pintu>/<file>`, waj
   diucapkan.** Pengecualian satu, `SpaceResourceType`: 0 itu *tipe*-nya, bukan "sebuah resource
   device"; prefiks `Space` wajib karena istilah itu beda-beda antar modul Tuya. Cuma
   `SpaceResourceDevice = 0` yang pernah terlihat, sisanya **belum diverifikasi**.
-- **`HasDevice` = list-then-contains di root.** Satu request, flat berapa pun jumlah device. Tak
-  di-cache: invalidasi butuh tahu kapan device ditambah/dicabut/di-relink, Tuya tak mengabari satu pun.
-  Sengaja tidak minta `DeviceChannelNames` — butuh identitas, bukan label.
+- **`UserHasDevice` = list-then-contains, dan sengaja tak minta nama kanal** (butuh identitas, bukan
+  label). Tak di-cache: invalidasi butuh tahu kapan device ditambah/dicabut/di-relink, Tuya tak bilang.
 - **Biaya `ContainsDevice` disebut angkanya.** Berhenti di match pertama; batas atas
   `deviceScanPageSize` × `deviceScanMaxPages` = 200 × 50 resource — **tumbuh seiring subtree**, beda
   kelas dari `HasDevice`. Menyerah karena kena cap = **error**, bukan `false`.

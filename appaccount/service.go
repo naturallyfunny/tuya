@@ -37,7 +37,7 @@ type Store interface {
 }
 
 type Client interface {
-	UserDevices(ctx context.Context, tuyaUID string) ([]tuya.UserDevice, error)
+	UserDevices(ctx context.Context, tuyaUID string, opts ...tuya.DeviceOption) ([]tuya.UserDevice, error)
 	UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error)
 	ChannelNames(ctx context.Context, devices []tuya.Device) (map[string][]tuya.Channel, error)
 }

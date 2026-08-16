@@ -104,7 +104,7 @@ func (f *fakeSpaceClient) SpaceResources(_ context.Context, id int64, _ bool, _ 
 	return nil, tuya.Page{}, nil
 }
 
-func (f *fakeSpaceClient) SpaceDevices(_ context.Context, spaceIDs []int64, _ bool, _, _ []string, lastID string, pageSize int) ([]tuya.SpaceDevice, error) {
+func (f *fakeSpaceClient) SpaceDevices(_ context.Context, spaceIDs []int64, _ bool, _, _ []string, lastID string, pageSize int, _ ...tuya.DeviceOption) ([]tuya.SpaceDevice, error) {
 	f.devicesOf = spaceIDs
 	f.devicesLastID = lastID
 	f.devicesPageSize = pageSize
