@@ -16,55 +16,118 @@ import (
 	"go.naturallyfunny.dev/tuya/appaccount"
 )
 
-//go:embed migrations
-var migrationFiles embed.FS
+//go:embed migrations/appaccount
+var appAccountStoreMigrationFiles embed.FS
 
-type Querier interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+func (s *AppAccountStore) validateSchema(ctx context.Context) error {
+	rows, err := s.db.Query(ctx,
+		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts LIMIT 0`,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: schema validation: %w", err)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("postgres: schema validation: %w", err)
+	}
+	return nil
+}
+
+func (s *AppAccountStore) migrateSchema(ctx context.Context) error {
+	if _, err := s.db.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS tuya_schema_migrations (
+			version    TEXT        PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("postgres: create migrations table: %w", err)
+	}
+	entries, err := appAccountStoreMigrationFiles.ReadDir("migrations/appaccount")
+	if err != nil {
+		return fmt.Errorf("postgres: read migrations/appaccount: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
+			continue
+		}
+		version := entry.Name()
+		rows, err := s.db.Query(ctx,
+			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, version,
+		)
+		if err != nil {
+			return fmt.Errorf("postgres: check migration %s: %w", version, err)
+		}
+		applied, err := pgx.CollectOneRow(rows, pgx.RowTo[bool])
+		if err != nil {
+			return fmt.Errorf("postgres: check migration %s: %w", version, err)
+		}
+		if applied {
+			continue
+		}
+		content, err := appAccountStoreMigrationFiles.ReadFile("migrations/appaccount/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("postgres: read %s: %w", version, err)
+		}
+		if _, err := s.db.Exec(ctx, string(content)); err != nil {
+			return fmt.Errorf("postgres: execute %s: %w", version, err)
+		}
+		if _, err := s.db.Exec(ctx,
+			`INSERT INTO tuya_schema_migrations (version) VALUES ($1)`, version,
+		); err != nil {
+			return fmt.Errorf("postgres: record migration %s: %w", version, err)
+		}
+	}
+	return nil
 }
 
 type AppAccountStore struct {
 	db Querier
 }
 
-var _ appaccount.Store = (*AppAccountStore)(nil)
-
-type options struct {
+type appAccountStoreOptions struct {
 	autoMigrate bool
 }
 
-type Option func(*options)
+type AppAccountStoreOption func(*appAccountStoreOptions)
 
-func WithAutoMigrate() Option {
-	return func(o *options) {
+func WithAutoMigrate() AppAccountStoreOption {
+	return func(o *appAccountStoreOptions) {
 		o.autoMigrate = true
 	}
 }
 
-func NewAppAccountStore(ctx context.Context, db Querier, opts ...Option) (*AppAccountStore, error) {
+type Querier interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func NewAppAccountStore(ctx context.Context, db Querier, opts ...AppAccountStoreOption) (*AppAccountStore, error) {
 	if db == nil {
 		panic("postgres: NewAppAccountStore called with nil Querier")
 	}
-	s := &AppAccountStore{db: db}
-	if err := prepareSchema(ctx, db, opts, "appaccount", s.validateSchema); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func prepareSchema(ctx context.Context, db Querier, opts []Option, door string, validate func(context.Context) error) error {
-	var cfg options
+	var cfg appAccountStoreOptions
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	store := &AppAccountStore{db: db}
 	if cfg.autoMigrate {
-		if err := migrate(ctx, db, door); err != nil {
-			return fmt.Errorf("postgres: auto-migrate: %w", err)
+		if err := store.migrateSchema(ctx); err != nil {
+			return nil, fmt.Errorf("postgres: auto-migrate: %w", err)
 		}
-		return nil
+		return store, nil
 	}
-	return validate(ctx)
+	if err := store.validateSchema(ctx); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func scanAppAccount(row pgx.CollectableRow) (appaccount.Account, error) {
+	var acc appaccount.Account
+	if err := row.Scan(&acc.Owner, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
+		return appaccount.Account{}, err
+	}
+	return acc, nil
 }
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
@@ -116,76 +179,6 @@ func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return appaccount.ErrNotLinked
-	}
-	return nil
-}
-
-func scanAppAccount(row pgx.CollectableRow) (appaccount.Account, error) {
-	var acc appaccount.Account
-	if err := row.Scan(&acc.Owner, &acc.TuyaUID, &acc.CreatedAt, &acc.UpdatedAt); err != nil {
-		return appaccount.Account{}, err
-	}
-	return acc, nil
-}
-
-func migrate(ctx context.Context, db Querier, door string) error {
-	if _, err := db.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS tuya_schema_migrations (
-			version    TEXT        PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)
-	`); err != nil {
-		return fmt.Errorf("postgres: create migrations table: %w", err)
-	}
-	dir := "migrations/" + door
-	entries, err := migrationFiles.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("postgres: read %s: %w", dir, err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
-			continue
-		}
-		version := door + "/" + entry.Name()
-		rows, err := db.Query(ctx,
-			`SELECT EXISTS(SELECT 1 FROM tuya_schema_migrations WHERE version = $1)`, version,
-		)
-		if err != nil {
-			return fmt.Errorf("postgres: check migration %s: %w", version, err)
-		}
-		applied, err := pgx.CollectOneRow(rows, pgx.RowTo[bool])
-		if err != nil {
-			return fmt.Errorf("postgres: check migration %s: %w", version, err)
-		}
-		if applied {
-			continue
-		}
-		content, err := migrationFiles.ReadFile(dir + "/" + entry.Name())
-		if err != nil {
-			return fmt.Errorf("postgres: read %s: %w", version, err)
-		}
-		if _, err := db.Exec(ctx, string(content)); err != nil {
-			return fmt.Errorf("postgres: execute %s: %w", version, err)
-		}
-		if _, err := db.Exec(ctx,
-			`INSERT INTO tuya_schema_migrations (version) VALUES ($1)`, version,
-		); err != nil {
-			return fmt.Errorf("postgres: record migration %s: %w", version, err)
-		}
-	}
-	return nil
-}
-
-func (s *AppAccountStore) validateSchema(ctx context.Context) error {
-	rows, err := s.db.Query(ctx,
-		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts LIMIT 0`,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres: schema validation: %w", err)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("postgres: schema validation: %w", err)
 	}
 	return nil
 }

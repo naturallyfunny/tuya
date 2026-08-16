@@ -115,7 +115,7 @@ func TestNewAppAccountStoreChecksTheSchemaWithoutCreatingIt(t *testing.T) {
 	}
 }
 
-func TestAppAccountAutoMigrateRaisesOnlyItsOwnDoor(t *testing.T) {
+func TestAppAccountAutoMigrateCreatesTheTable(t *testing.T) {
 	db := &fakeDB{applied: map[string]bool{}}
 	if _, err := NewAppAccountStore(context.Background(), db, WithAutoMigrate()); err != nil {
 		t.Fatalf("NewAppAccountStore: unexpected error: %v", err)
@@ -123,20 +123,17 @@ func TestAppAccountAutoMigrateRaisesOnlyItsOwnDoor(t *testing.T) {
 	if !db.ran("tuya_app_accounts") {
 		t.Error("auto-migrate did not create tuya_app_accounts")
 	}
-	if db.ran("tuya_spaces") {
-		t.Error("auto-migrate raised the spatial door's migrations")
-	}
 	if db.ran("DROP TABLE") {
 		t.Error("auto-migrate executed a .down.sql")
 	}
-	want := []string{"appaccount/000001_init.up.sql"}
+	want := []string{"000001_init.up.sql"}
 	if got := db.recordedMigrations(); !slices.Equal(got, want) {
 		t.Errorf("recorded migrations = %v, want %v", got, want)
 	}
 }
 
 func TestAppAccountAutoMigrateSkipsWhatIsAlreadyRecorded(t *testing.T) {
-	db := &fakeDB{applied: map[string]bool{"appaccount/000001_init.up.sql": true}}
+	db := &fakeDB{applied: map[string]bool{"000001_init.up.sql": true}}
 	if _, err := NewAppAccountStore(context.Background(), db, WithAutoMigrate()); err != nil {
 		t.Fatalf("NewAppAccountStore: unexpected error: %v", err)
 	}
