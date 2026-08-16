@@ -100,20 +100,24 @@ Two composable tiers. Bind the one your caller needs:
 
 - **`tuya.Client`** — the client. Speaks Tuya at the **project level**: one access ID/secret
   yields an access token it caches in memory and refreshes on its own, when Tuya rejects the
-  cached one with code `1010`. Handles HMAC-SHA256 signing. Every other method is
+  cached one with code `1010`. Handles HMAC-SHA256 signing. Most other methods are exactly
   one Tuya endpoint: `UserDevices`, `SpaceDevices`, `DeviceStatus`, `SendCommands`,
   `DeviceChannelNames` for devices, and `CreateSpace`, `Space`, `ModifySpace`, `DeleteSpace`,
-  `SpaceResources`, `ListSpaces`, `SpaceRelation` for spaces. One method per endpoint, so each
-  call is one request and nothing is composed behind your back — including pagination, which is
-  handed to you a page at a time rather than looped over silently. `Do` is a raw escape hatch
-  for endpoints not yet wrapped. No notion of an owner at all; a holder can reach any device or
-  space the project can. Device commands go through here — they are addressed by device ID,
-  which is already a Tuya handle, so there is nothing for a door to resolve.
+  `SpaceResources`, `ListSpaces`, `SpaceRelation` for spaces. Four things compose more than one
+  request — `ChannelNames`, the `WithChannelNames()` option both listings take, `UserHasDevice`
+  and `SpaceHasDevice` — and each is shaped so the cost is visible where you type it rather than
+  wired in once at construction. Everything else is one call, one request, including pagination,
+  which is handed to you a page at a time rather than looped over silently. `Do` is a raw escape
+  hatch for endpoints not yet wrapped. No notion of an owner at all; a holder can reach any
+  device or space the project can. Device commands go through here — they are addressed by
+  device ID, which is already a Tuya handle, so there is nothing for a door to resolve.
 - **`appaccount.Service`** — resolves owner → Tuya UID through an `appaccount.Store`, lists that
   account's devices with channel names filled in, and answers `HasDevice`. The package owns
-  `Account`, `ErrNotLinked`, and the `Store` / `Client` interfaces it drives — including the
-  membership check itself, which is built here from plain root primitives rather than asked of
-  the root package.
+  `Account`, `Device`, `ErrNotLinked`, and the `Store` / `Client` interfaces it drives. What it
+  does *not* own any more is an opinion about Tuya: which categories carry numbered channels, and
+  the fan-out that acts on it, live next to the endpoint they call. The door resolves the owner,
+  lists, asks for the channel names and composes the two; `HasDevice` is `UserHasDevice` with the
+  UID resolved first.
 
   The package name states **which of Tuya's two device models** it speaks. The app-account one:
   every human holds their own Tuya app account, you link that account to your cloud project, and
@@ -276,13 +280,20 @@ nothing about it for a door to resolve:
 ```go
 acc, _ := store.Get(ctx, owner)
 
-// Each call is exactly one Tuya request — no hidden fan-out, no enrichment.
+// One Tuya request each.
 devices, err := c.UserDevices(ctx, acc.TuyaUID)          // UID-addressed
 status, err := c.DeviceStatus(ctx, deviceID)             // device-addressed
-channels, err := c.DeviceChannelNames(ctx, deviceID)     // multi-gang labels, if you want them
+channels, err := c.DeviceChannelNames(ctx, deviceID)     // one device's channel labels
 
 // Space-addressed: up to 5 space IDs, optional product/category filters, page by last device ID.
 devices, err := c.SpaceDevices(ctx, []int64{spaceID}, true, nil, nil, "", 20)
+
+// 1 + N: the listing, then one request per device in it that could have numbered channels.
+devices, err := c.UserDevices(ctx, acc.TuyaUID, tuya.WithChannelNames())
+
+// Membership, asked of either tree. Flat on a UID; a bounded subtree walk on a space.
+ok, err := c.UserHasDevice(ctx, acc.TuyaUID, deviceID)
+ok, err = c.SpaceHasDevice(ctx, spaceID, deviceID)
 ```
 
 `SpaceDevices` returns only the devices bound to the space IDs you name. The `recursive`
@@ -292,9 +303,17 @@ asking with `true` or `false` at the space itself returned the same list. The pa
 passed through as Tuya documents it, but do not plan a subtree walk on it — `SpaceResources`
 *is* transitive, and that is what `spatial.ContainsDevice` scans.
 
-`DeviceChannelNames` is worth a request only for devices that have several channels.
-`appaccount.IsMultiGang(category)` is the same judgement `ListDevices` makes internally, exported
-so you can ask it before spending the request — it reads category `kg` and the `cz*` family.
+`DeviceChannelNames` is worth a request only for a device that has several channels.
+`WithChannelNames()` is that judgement applied to a whole listing: it asks `/multiple-names` for
+every device whose category can carry numbered channels and fills `Channels` on the ones that
+answer. `ChannelNames` is the same fan-out over a `[]tuya.Device` you already hold, which is what
+`appaccount.ListDevices` calls. Thirteen categories qualify, and the list is the library's own
+reading of Tuya's catalogue rather than something the API states — see the
+[rationale](#design-rationale) before you lean on it.
+
+The category codes are exported as **134 constants**, `tuya.DeviceCategorySwitch` through
+`tuya.DeviceCategoryWirelessSwitch`, so the `categories` filter of `SpaceDevices` and any branch
+you write on `device.Category` can name one instead of spelling `"kg"`.
 
 > `tuya.Client` knows nothing about owners. A holder can reach every device in the project.
 > That is the point — the doors tell you whose a handle is, and you decide what follows.
@@ -441,7 +460,7 @@ Each one is a domain or usage constraint, not an oversight.
   Exporting a speculative interface from the root would only add a compatibility burden that
   widens with every new domain.
 
-- **`resolveChannelNames` uses `sync.WaitGroup.Go` + `errors.Join`, not `errgroup`.**
+- **`ChannelNames` uses `sync.WaitGroup.Go` + `errors.Join`, not `errgroup`.**
   The semantics are **collect-all**: the caller wants to know *every* channel that failed to
   resolve in one call. `errgroup.WithContext` is **fail-fast** — the first error cancels its
   siblings, which is exactly the information we don't want to lose. The "free context
@@ -461,21 +480,29 @@ Each one is a domain or usage constraint, not an oversight.
   one a millisecond after the check passed. So the reactive path has to exist and has to be
   correct no matter what; the check on top of it is pure optimization. What it optimizes is one
   wasted request every two hours. What it costs is an exclusive `tokenLock.Lock()` on **every**
-  `Do`, a serialization point on the hottest path in the library. Defending it needs an argument
-  about how often callers call — which is the one argument this library does not make.
+  `Do` — today the signer only takes the read half of that `sync.RWMutex`, so concurrent calls do
+  not queue behind each other; a check that may refresh cannot. Defending the trade needs an
+  argument about how often callers call, which is the one argument this library does not make.
 
-- **`HasDevice` answers by list-then-contains, and lives in the door.**
-  It lists the account's devices and checks membership. The cost is **one request, flat** no
-  matter how many devices the account has. Nothing is cached: an ownership cache has to be
-  invalidated when a device is added, removed or re-linked, and the library has no way to learn
-  about any of those. A consumer that can learn about them is in a better position to cache than
-  this library is.
+- **Membership is answered by list-then-contains, and the walk lives at the root.**
+  `tuya.Client.UserHasDevice` lists the UID's devices and checks the ID. The cost is **one
+  request, flat** no matter how many devices the account has. `appaccount.HasDevice` is that
+  method with the owner resolved to a UID first, and nothing else — the door contributes the
+  mapping, which is the only part it knows.
 
-  The listing comes from `tuya.Client.UserDevices`. The root package deliberately exposes no
-  equivalent: a method whose reason to exist is the layer above would shape the lower layer
-  around the upper one. The root answers "what is on this UID"; the door is what knows that UID
-  belongs to your owner. `HasDevice` never asks for channel labels either — it needs identity,
-  not names, and should not pay one request per multi-gang device. A test asserts that.
+  That pairing is why the walk sits beside `UserDevices` rather than in the door. "Is this device
+  on this UID" is a question about Tuya, answerable by anyone holding a client; only the
+  resolution of *owner* to UID is the door's own. `SpaceHasDevice` is the same question put to
+  the other tree, over `SpaceResources`, and it is the expensive one — see the space bullet
+  below. `spatial.ContainsDevice` keeps its own copy of that scan, because what it scans is the
+  owner's space and the door reaches the client through an interface that does not name
+  `SpaceHasDevice`.
+
+  Nothing is cached: an ownership cache has to be invalidated when a device is added, removed or
+  re-linked, and the library has no way to learn about any of those. A consumer that can learn
+  about them is in a better position to cache than this library is. Neither method asks for
+  channel labels either — they need identity, not names, and must not pay one request per
+  multi-channel device. Tests at both layers assert that.
 
   A device that is absent is a plain `false`; only a failed lookup is an error. "Not found" and
   "could not look" must not arrive as the same answer to code that branches on it.
@@ -498,7 +525,8 @@ Each one is a domain or usage constraint, not an oversight.
   A *device* gets no such shortcut. Tuya has no "which space holds this device" lookup at all:
   `GET /v2.0/cloud/thing/{device_id}` returns product, status and location and no space or asset
   ID. The only route is to enumerate the subtree's resources and look for the ID, paginated.
-  `ContainsDevice` does exactly that and **know the cost before you build on it**: it stops at
+  `ContainsDevice` does exactly that — as does `tuya.Client.SpaceHasDevice`, the same walk over a
+  space you name yourself — and **know the cost before you build on it**: it stops at
   the first match, so a lucky call is one request, but the page holding your device is not
   guaranteed to be the first, and the ceiling is 50 pages of 200 resources. Unlike `HasDevice`,
   this **grows with the size of the estate**.
@@ -569,13 +597,14 @@ Each one is a domain or usage constraint, not an oversight.
   `Do` does for `code`, not composition. `SpaceRelation` returns `(bool, error)` because there
   the boolean *is* the answer.
 
-- **Paging is never looped inside the client, and the one loop in the library is bounded.**
+- **No listing pages itself, and the two loops the library does own are bounded.**
   Tuya documents how to fetch the next page but never how to know there isn't one, and a loop
   written from a guess is an infinite loop that burns quota. Live, the last page arrives as an
-  empty `data` with the cursor field absent altogether. The client hands you that page and the
-  cursor and lets you compose; the device scan, which has no choice but to walk, stops on the
-  documented signal *and* on a cursor that stopped moving, with a cap on pages read. The extra
-  stops cost one comparison and turn any future surprise into a refusal rather than a hang.
+  empty `data` with the cursor field absent altogether. Every listing hands you that page and the
+  cursor and lets you compose. The exceptions are the two device scans — `SpaceHasDevice` and
+  `spatial.ContainsDevice` — which have no choice but to walk: both stop on the documented signal
+  *and* on a cursor that stopped moving, with a cap on pages read. The extra stops cost one
+  comparison and turn any future surprise into a refusal rather than a hang.
 
 - **`ListSpaces` takes a space ID of zero to mean the whole project, and a test keeps the door
   away from it.**
@@ -592,33 +621,48 @@ Each one is a domain or usage constraint, not an oversight.
   ID is zero. A test drives the door with each of those and fails if a zero ever reaches the
   client — and it was checked against a deliberately broken guard, not just a passing run.
 
-- **Every method on `tuya.Client` is one Tuya endpoint, except the protocol itself.**
-  If a method can't be pointed at exactly one endpoint, it is composing behavior, and
-  composition belongs to whoever wants it. Two methods used to break this and were moved into
-  the doors: `HasDevice` (born to serve the layer above, and now living where the owner mapping
-  actually is) and `enrichDevices`, which carried the judgment that categories `kg` and `cz*`
-  are the multi-gang ones — an opinion about Tuya's catalogue, not something its API states.
-  What the root offers instead is the primitive: `DeviceChannelNames` wraps
-  `GET /v1.0/devices/{id}/multiple-names` and nothing more; `appaccount.Service` fans it out
-  across the devices it judges worth labelling. That judgement is exported as
-  `appaccount.IsMultiGang` — the door already acts on it, so the opinion is public either way,
-  and a caller who wants the primitive should be able to ask the same question first.
+- **A root method is one Tuya endpoint by default; anything more has to show its cost at the call
+  site.**
+  The older rule was absolute — one method, one endpoint, composition belongs to whoever wants
+  it — and it was dropped, because `ChannelNames`, `UserHasDevice`, `SpaceHasDevice` and
+  `WithChannelNames()` are all useful and not one of them could be born under it. What the rule
+  was protecting against is not composition but *hidden* composition, so that is what the
+  replacement forbids. A fan-out is fine; a fan-out you cannot see from the line that pays for it
+  is not.
 
-  The **field** followed the behavior, one release late. The old `Device` type carried a
-  `CodeNameMapping` slot that no Tuya response ever filled — only `resolveChannelNames` wrote to
-  it, from a different endpoint. A struct field that exists so the layer above has somewhere to
-  put its results is the same violation as a method, just quieter. `tuya.UserDevice` now holds
-  only fields `GET /v1.0/users/{uid}/devices` actually sends, and `appaccount.Device` embeds it
-  and adds `Channels`.
+  `WithChannelNames()` is the shape that follows. It is a per-call `DeviceOption`, and the
+  alternative it beat was an option on `New` — which would have turned every `UserDevices` in the
+  program into 1 + N forever, decided once in the wiring, invisible at each of the call sites
+  billed for it. `Channels` stays empty unless a call asks, and empty even then for a device with
+  one channel.
 
-  The exceptions are `Do`, the token lifecycle and the retry on code `1010` — protocol
+  Which categories can carry numbered channels is a fact about **Tuya**, not about a door, so the
+  predicate and the fan-out it feeds sit beside the endpoint they call rather than in
+  `appaccount`. That relocation is also why there is no `appaccount.IsMultiGang` any more: the
+  door no longer holds the opinion, and the two entry points that act on it — `WithChannelNames()`
+  and `ChannelNames` — take devices rather than a category, so there is nothing left for a caller
+  to ask in advance.
+
+  The list itself is worth reading before you rely on it. It grew from `kg` plus the `cz*` prefix
+  to thirteen categories in four channel-numbering shapes: `switch_N` (`kg`, `cz`, `pc`, `tdq`,
+  `ggq`, `cjkg`, `ckmkzq`, `wkcz`), `switch_led_N` (`tgkg`, `tgq`), `control_N` (`cl`, `clkg`) and
+  `switchN_value` (`wxkg`). Only `kg`, `cz` and `pc` are documented as answering
+  `/multiple-names`; the other ten are in because their channels demonstrably exist, which is not
+  free — a consumer with curtains, dimmers or wireless buttons now pays one request per such
+  device whenever it asks for names, and may get an empty list back. `cz` also stopped matching by
+  prefix; no other category begins with those two letters, so nothing changes today, but the loose
+  form is gone.
+
+  The **field** followed the behavior. The `Device` type once carried a `CodeNameMapping` slot
+  that no Tuya response ever filled — a struct field existing so the layer above had somewhere to
+  put its results. `Channels` is not that: the fan-out that fills it now lives in the same package
+  as the field, and it is written only when the caller asked for it.
+
+  `Do`, the token lifecycle and the retry on code `1010` sit outside the rule entirely — protocol
   correctness, not domain composition.
 
-  The cost is real and worth stating: a consumer binding the client on its own gets no
-  batteries. Wanting channel labels means writing the fan-out. That is the trade for a layer
-  you can audit against the vendor's API docs line by line.
-
-- **One result type per endpoint, named after its method. There is no `tuya.Device`.**
+- **One result type per endpoint, named after its method. `tuya.Device` holds only what both
+  families spell the same way.**
   Tuya's device APIs fall into two families that disagree about their own field names, and the
   disagreement is not just cosmetic. Verified on a live Singapore project, same devices, same
   day:
@@ -638,19 +682,31 @@ Each one is a domain or usage constraint, not an oversight.
   listings silently starts showing factory model numbers to end users.
 
   So the type carries the endpoint in its name: `UserDevices` returns `[]UserDevice`,
-  `SpaceDevices` returns `[]SpaceDevice`. A generic `Device` would be an invitation to assume the
-  two are interchangeable. Worth stating in advance, because it will be tempting the day
+  `SpaceDevices` returns `[]SpaceDevice`. A type covering both would be an invitation to assume
+  the two are interchangeable. Worth stating in advance, because it will be tempting the day
   `Query Device Details` gets wrapped: on the wire its fields are *identical* to the
-  space listing's and differ only in casing, and it still gets **its own struct**. No shared
+  space listing's and differ only in casing, and it still gets **its own struct**. No merged
   type, and no `UnmarshalJSON` that accepts both casings — that would hide which endpoint
   answered, and would go quiet on the day Tuya fixes one of them.
 
+  `tuya.Device` exists, but it is the opposite of that: `ID`, `Category`, `Channels`, embedded in
+  both. Only the first two are spelled identically on both wires — `product_id` versus
+  `productId` differ in casing, and `name` differs in *meaning*, which is exactly the confusion a
+  shared field would bury — and `Channels` is not wire data at all. What it buys is
+  `ChannelNames(ctx, []Device)`: one fan-out that answers for either family. Go slices are not
+  covariant, so a caller with `[]UserDevice` still builds the `[]Device` itself; that loop is the
+  price of the shape, and it is cheaper than a second method per type or a generic function,
+  which could not be a method and so could not travel through the doors' local `Client`
+  interfaces.
+
 - **The device types are a subset of the wire, and the line is identity over presentation.**
-  Both listings send around twenty fields. The types keep seven and eight of them: the device's
-  own identifiers, the two flags and the `status` that would otherwise cost one request per
-  device to recover, and the `category` that `IsMultiGang` reads. `product_id` stays because it
-  is an identifier and because `SpaceDevices` takes `product_ids` as a filter — a field this
-  package asks for on the way in has to be available on the way out.
+  Both listings send around twenty fields. The types keep seven and eight of them (plus
+  `Channels`, which is not on the wire): the device's own identifiers, the two flags and the
+  `status` that would otherwise cost one request per device to recover, and the `category` the
+  channel-name fan-out reads. `product_id` stays because it is an identifier and because
+  `SpaceDevices` takes `product_ids` as a filter — a field this package asks for on the way in has
+  to be available on the way out. `bindSpaceId` is a `string`: it is the one space ID in this API
+  that does not arrive as a number, and it is decoded as what it is rather than coerced.
 
   Dropped: `icon`, `model`, `product_name`, `lat`, `lon`, `ip`, `time_zone`, `uuid`, `node_id`,
   `biz_type`, and the activate/create/update timestamps. Those are labels and presentation, and
@@ -731,21 +787,25 @@ implementations: happy paths, `appaccount.ErrNotLinked` / `spatial.ErrNotLinked`
 `spatial.ErrNotOwned`, and the distinction the ownership answers depend on — an absent device is
 a plain `false` while a failed lookup is an error, never the two collapsed together. `appaccount`
 also pins the cost rule (an ownership answer must never trigger channel-name requests) and covers
-**95.7%** of its statements. `spatial` covers **86.0%**, including a zero space ID resolving to
+**96.8%** of its statements. `spatial` covers **85.9%**, including a zero space ID resolving to
 the owner's own space without asking Tuya, the owner's own space being undeletable through the
 door, a space the project cannot see being reported as unowned rather than surfacing a raw API
 error, and the paginated device scan terminating on a stalled cursor *and* on a cursor that keeps
 advancing forever.
 
-The root package is tested against an `httptest` server (**64.3%** of its statements) — real HTTP
-round trips over a real socket, not mocks. Two behaviours are worth pinning because they are
+The root package is tested against an `httptest` server (**76.5%** of its statements) — real HTTP
+round trips over a real socket, not mocks. Three groups are worth pinning because they are
 invisible from the outside. The token retry: the stub answers code `1010` and the test asserts
 the retry carried a *different* access token, since a retry that silently replays the rejected
-token looks identical to one that works until a credential is rotated in production. And the
-space layer's wire contract, each case taken from a live response: the field names Tuya really
+token looks identical to one that works until a credential is rotated in production. The space
+layer's wire contract, each case taken from a live response: the field names Tuya really
 sends, a last page arriving with no cursor at all, an ID surviving beyond 2^53, `result:false`
 becoming an error, only the parameter spellings Tuya binds going out — and the query string
-staying ASCII-sorted, which nothing but a `1004` would otherwise tell you about.
+staying ASCII-sorted, which nothing but a `1004` would otherwise tell you about. And the cost of
+the device methods, now that some of them compose: a listing without `WithChannelNames()` makes
+exactly one request, the fan-out asks only about categories that can carry channels, one failing
+device does not cancel its siblings, and the space scan gives up with an error rather than
+paging forever.
 
 The stores are integration-shaped by nature. `postgres` reaches **82.5%** against a fake
 `Querier` that replays scripted rows, which is enough to pin the SQL each store sends and that
@@ -757,8 +817,22 @@ and running both stores against a real database or the Firestore emulator is on 
 
 ## Compatibility
 
-- **Go 1.25+**, per `go.mod`. The concurrent fan-out in `resolveChannelNames` uses
+- **Go 1.25+**, per `go.mod`. The concurrent fan-out in `ChannelNames` uses
   `sync.WaitGroup.Go`, added in Go 1.25.
+- **Breaking in v0.9.0: `appaccount.IsMultiGang` is gone, and channel names are asked for per
+  call.** The judgement it exported moved into the root package, where it is no longer a category
+  predicate you can call: ask `UserDevices` / `SpaceDevices` with `tuya.WithChannelNames()`, or
+  call `tuya.ChannelNames` with the devices you hold. `appaccount.ListDevices` is unchanged for
+  its callers — it still returns `Channels` filled in.
+- **Breaking in v0.9.0: both doors' `Client` interfaces changed.** `UserDevices` and
+  `SpaceDevices` gained a variadic `...tuya.DeviceOption`, `appaccount.Client` gained
+  `UserHasDevice` and `ChannelNames`. `*tuya.Client` still satisfies both; only your own fakes
+  need the signatures updated.
+- **New in v0.9.0: `tuya.Device`, the category constants, and the two membership questions.**
+  `Device` is `ID` + `Category` + `Channels`, embedded in `UserDevice` and `SpaceDevice`, so one
+  fan-out serves both. 134 `tuya.DeviceCategory*` constants name Tuya's catalogue.
+  `UserHasDevice` and `SpaceHasDevice` answer membership against a UID and against a space —
+  the first flat, the second a bounded scan.
 - **Breaking in v0.8.0: the layers swapped places.** The `cloud` subpackage is now the root
   `tuya` package, and each owner-scoped door moved into its own subpackage. Mechanically:
   `cloud.X` → `tuya.X`; `tuya.NewAppAccountClient` → `appaccount.NewService`;
@@ -814,12 +888,13 @@ client.go        tuya.Client: token cache/refresh, Do + retry on 1010, and the b
                  No endpoints of its own.
 auth.go          the HMAC-SHA256 signer, the auth headers, and the token lifecycle. A token
                  request is signed without a token; every other request carries one.
-device.go        UserDevice/SpaceDevice/DataPoint/Channel, one type per endpoint + its method.
+device.go        Device/UserDevice/SpaceDevice/DataPoint/Channel and their endpoints, then the
+                 membership walks (UserHasDevice, SpaceHasDevice), the category constants, and
+                 the channel-name fan-out with the judgement it reads.
 space.go         Space/Resource/Page + one method per space endpoint.
 appaccount/
   service.go     The app-account door, end to end: Account, Device, ErrNotLinked, Store,
-                 Client, Service — ListDevices, HasDevice, and the channel-name fan-out
-                 with the multi-gang judgement it needs.
+                 Client, Service — owner → UID, then ListDevices and HasDevice on top of it.
 spatial/
   service.go     The spatial door, end to end: Space, ErrNotLinked, ErrNotOwned,
                  ErrOwnerSpaceProtected, Store, Client, Service — the space operations
@@ -854,6 +929,11 @@ stores. Remaining work is additive:
       permission model are not locked out. See [Design rationale](#design-rationale).
 - [x] Put the Tuya API at the root and each door in its own subpackage, so importing the module
       hands you Tuya and the owner mapping is opt-in.
+- [x] Give the root what is a fact about Tuya rather than about a door: the category constants,
+      the shared `Device`, the channel-name fan-out behind a per-call option, and membership
+      against a UID and against a space.
+- [ ] Probe `/multiple-names` against the ten channel categories that are in on evidence rather
+      than on Tuya's documentation, and drop any that never answer.
 - [ ] Integration tests for the root package / `postgres` / `firestore` behind a build tag and
       live infra.
 - [ ] Further Tuya domains beyond device and space control (`home.go`), added as new files with
