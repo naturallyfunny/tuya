@@ -118,10 +118,8 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, pageSize in
 		return nil, err
 	}
 	var devices []SpaceDevice
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &devices); err != nil {
-			return nil, fmt.Errorf("unmarshal device list of spaces %s: %w", params.Get("space_ids"), err)
-		}
+	if err := json.Unmarshal(raw, &devices); err != nil {
+		return nil, fmt.Errorf("unmarshal device list of spaces %s: %w", params.Get("space_ids"), err)
 	}
 	if options.channelNames {
 		base := make([]Device, len(devices))
@@ -145,10 +143,8 @@ func (c *Client) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint
 		return nil, err
 	}
 	var status []DataPoint
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &status); err != nil {
-			return nil, fmt.Errorf("unmarshal device status: %w", err)
-		}
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return nil, fmt.Errorf("unmarshal device status: %w", err)
 	}
 	return status, nil
 }
@@ -183,6 +179,8 @@ const (
 	deviceScanMaxPages = 50
 	deviceScanPageSize = 200
 )
+
+const SpaceResourceDevice SpaceResourceType = 0
 
 func (c *Client) SpaceHasDevice(ctx context.Context, spaceID int64, deviceID string) (bool, error) {
 	var lastRowKey int64
@@ -352,10 +350,8 @@ func (c *Client) DeviceChannelNames(ctx context.Context, deviceID string) ([]Cha
 		return nil, err
 	}
 	var channels []Channel
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &channels); err != nil {
-			return nil, fmt.Errorf("unmarshal channels of device %s: %w", deviceID, err)
-		}
+	if err := json.Unmarshal(raw, &channels); err != nil {
+		return nil, fmt.Errorf("unmarshal channels of device %s: %w", deviceID, err)
 	}
 	return channels, nil
 }

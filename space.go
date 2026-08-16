@@ -37,15 +37,10 @@ func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, d
 	return id, nil
 }
 
-var ErrSpaceNotFound = errors.New("tuya: space not found")
-
 func (c *Client) Space(ctx context.Context, id int64) (Space, error) {
 	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/space/%d", id), nil)
 	if err != nil {
 		return Space{}, err
-	}
-	if len(raw) == 0 || string(raw) == "null" {
-		return Space{}, fmt.Errorf("space %d: %w", id, ErrSpaceNotFound)
 	}
 	var space Space
 	if err := json.Unmarshal(raw, &space); err != nil {
@@ -69,10 +64,8 @@ func (c *Client) ModifySpace(ctx context.Context, id int64, name, description st
 		return err
 	}
 	var applied bool
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("unmarshal result of modifying space %d: %w", id, err)
-		}
+	if err := json.Unmarshal(raw, &applied); err != nil {
+		return fmt.Errorf("unmarshal result of modifying space %d: %w", id, err)
 	}
 	if !applied {
 		return fmt.Errorf("modify space %d: %w", id, ErrNotApplied)
@@ -86,10 +79,8 @@ func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
 		return err
 	}
 	var applied bool
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("unmarshal result of deleting space %d: %w", id, err)
-		}
+	if err := json.Unmarshal(raw, &applied); err != nil {
+		return fmt.Errorf("unmarshal result of deleting space %d: %w", id, err)
 	}
 	if !applied {
 		return fmt.Errorf("delete space %d: %w", id, ErrNotApplied)
@@ -103,8 +94,6 @@ type Resource struct {
 	ID   string            `json:"res_id"`
 	Type SpaceResourceType `json:"res_type"`
 }
-
-const SpaceResourceDevice SpaceResourceType = 0
 
 func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, lastRowKey int64, pageSize int) ([]Resource, int64, error) {
 	params := url.Values{}
@@ -123,10 +112,8 @@ func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, las
 		Data       []Resource `json:"data"`
 		LastRowKey int64      `json:"last_row_key"`
 	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, 0, fmt.Errorf("unmarshal resources of space %d: %w", id, err)
-		}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, 0, fmt.Errorf("unmarshal resources of space %d: %w", id, err)
 	}
 	return body.Data, body.LastRowKey, nil
 }
@@ -151,10 +138,8 @@ func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, lastRow
 		Data       []int64 `json:"data"`
 		LastRowKey int64   `json:"last_row_key"`
 	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, 0, fmt.Errorf("unmarshal space list: %w", err)
-		}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, 0, fmt.Errorf("unmarshal space list: %w", err)
 	}
 	return body.Data, body.LastRowKey, nil
 }

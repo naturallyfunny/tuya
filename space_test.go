@@ -204,16 +204,6 @@ func TestListSpacesDecodesIDList(t *testing.T) {
 	}
 }
 
-func TestAMissingSpaceIsReportedAsSuch(t *testing.T) {
-	for _, result := range []string{``, `null`} {
-		iot, _ := newSpaceClient(t, result)
-		_, err := iot.Space(context.Background(), 15)
-		if !errors.Is(err, ErrSpaceNotFound) {
-			t.Errorf("Space with result %q: error = %v, want ErrSpaceNotFound", result, err)
-		}
-	}
-}
-
 func TestAMissingResultIsNotAConfirmation(t *testing.T) {
 	iot, _ := newSpaceClient(t, `null`)
 	if err := iot.DeleteSpace(context.Background(), 15); !errors.Is(err, ErrNotApplied) {

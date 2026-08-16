@@ -62,8 +62,6 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("tuya: api error %d: %s", e.Code, e.Msg)
 }
 
-const CodeNoSpacePermission = 40001900
-
 type response struct {
 	Success bool            `json:"success"`
 	T       int64           `json:"t"`
