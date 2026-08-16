@@ -24,7 +24,7 @@ func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, d
 		Description string `json:"description,omitempty"`
 	}{Name: name, ParentID: parentID, Description: description})
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal space payload: %w", err)
+		return 0, fmt.Errorf("marshal space payload: %w", err)
 	}
 	raw, err := c.Do(ctx, http.MethodPost, "/v2.0/cloud/space/creation", body)
 	if err != nil {
@@ -32,7 +32,7 @@ func (c *Client) CreateSpace(ctx context.Context, name string, parentID int64, d
 	}
 	var id int64
 	if err := json.Unmarshal(raw, &id); err != nil {
-		return 0, fmt.Errorf("failed to unmarshal created space id: %w", err)
+		return 0, fmt.Errorf("unmarshal created space id: %w", err)
 	}
 	return id, nil
 }
@@ -49,7 +49,7 @@ func (c *Client) Space(ctx context.Context, id int64) (Space, error) {
 	}
 	var space Space
 	if err := json.Unmarshal(raw, &space); err != nil {
-		return Space{}, fmt.Errorf("failed to unmarshal space %d: %w", id, err)
+		return Space{}, fmt.Errorf("unmarshal space %d: %w", id, err)
 	}
 	return space, nil
 }
@@ -62,7 +62,7 @@ func (c *Client) ModifySpace(ctx context.Context, id int64, name, description st
 		Description string `json:"description,omitempty"`
 	}{Name: name, Description: description})
 	if err != nil {
-		return fmt.Errorf("failed to marshal space payload: %w", err)
+		return fmt.Errorf("marshal space payload: %w", err)
 	}
 	raw, err := c.Do(ctx, http.MethodPut, fmt.Sprintf("/v2.0/cloud/space/%d", id), body)
 	if err != nil {
@@ -71,7 +71,7 @@ func (c *Client) ModifySpace(ctx context.Context, id int64, name, description st
 	var applied bool
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("failed to unmarshal the result of modifying space %d: %w", id, err)
+			return fmt.Errorf("unmarshal result of modifying space %d: %w", id, err)
 		}
 	}
 	if !applied {
@@ -88,7 +88,7 @@ func (c *Client) DeleteSpace(ctx context.Context, id int64) error {
 	var applied bool
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &applied); err != nil {
-			return fmt.Errorf("failed to unmarshal the result of deleting space %d: %w", id, err)
+			return fmt.Errorf("unmarshal result of deleting space %d: %w", id, err)
 		}
 	}
 	if !applied {
@@ -125,7 +125,7 @@ func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, las
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal the resources of space %d: %w", id, err)
+			return nil, 0, fmt.Errorf("unmarshal resources of space %d: %w", id, err)
 		}
 	}
 	return body.Data, body.LastRowKey, nil
@@ -153,7 +153,7 @@ func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, lastRow
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal space list: %w", err)
+			return nil, 0, fmt.Errorf("unmarshal space list: %w", err)
 		}
 	}
 	return body.Data, body.LastRowKey, nil
@@ -169,7 +169,7 @@ func (c *Client) SpaceRelation(ctx context.Context, parent, child int64) (bool, 
 	}
 	var contains bool
 	if err := json.Unmarshal(raw, &contains); err != nil {
-		return false, fmt.Errorf("failed to unmarshal space relation: %w", err)
+		return false, fmt.Errorf("unmarshal space relation: %w", err)
 	}
 	return contains, nil
 }

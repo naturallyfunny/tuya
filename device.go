@@ -55,7 +55,7 @@ func (c *Client) UserDevices(ctx context.Context, tuyaUID string, opts ...Device
 	}
 	var devices []UserDevice
 	if err := json.Unmarshal(raw, &devices); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal device list: %w", err)
+		return nil, fmt.Errorf("unmarshal device list: %w", err)
 	}
 	if options.channelNames {
 		base := make([]Device, len(devices))
@@ -120,7 +120,7 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, pageSize in
 	var devices []SpaceDevice
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &devices); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal the device list of spaces %s: %w", params.Get("space_ids"), err)
+			return nil, fmt.Errorf("unmarshal device list of spaces %s: %w", params.Get("space_ids"), err)
 		}
 	}
 	if options.channelNames {
@@ -147,7 +147,7 @@ func (c *Client) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint
 	var status []DataPoint
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &status); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal device status: %w", err)
+			return nil, fmt.Errorf("unmarshal device status: %w", err)
 		}
 	}
 	return status, nil
@@ -158,10 +158,10 @@ func (c *Client) SendCommands(ctx context.Context, deviceID string, commands []D
 		Commands []DataPoint `json:"commands"`
 	}{Commands: commands})
 	if err != nil {
-		return fmt.Errorf("failed to marshal command payload: %w", err)
+		return fmt.Errorf("marshal command payload: %w", err)
 	}
 	if _, err := c.Do(ctx, http.MethodPost, fmt.Sprintf("/v1.0/iot-03/devices/%s/commands", deviceID), body); err != nil {
-		return fmt.Errorf("failed to send commands: %w", err)
+		return fmt.Errorf("send commands to device %s: %w", deviceID, err)
 	}
 	return nil
 }
@@ -354,7 +354,7 @@ func (c *Client) DeviceChannelNames(ctx context.Context, deviceID string) ([]Cha
 	var channels []Channel
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &channels); err != nil {
-			return nil, fmt.Errorf("failed to decode channels for device %s: %w", deviceID, err)
+			return nil, fmt.Errorf("unmarshal channels of device %s: %w", deviceID, err)
 		}
 	}
 	return channels, nil

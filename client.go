@@ -42,7 +42,7 @@ func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error
 		client.httpClient = http.DefaultClient
 	}
 	if err := client.refreshToken(context.Background()); err != nil {
-		return nil, fmt.Errorf("tuya: New: prefetch token: %w", err)
+		return nil, fmt.Errorf("prefetch token: %w", err)
 	}
 	return client, nil
 }
@@ -59,7 +59,7 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("tuya api error %d: %s", e.Code, e.Msg)
+	return fmt.Sprintf("tuya: api error %d: %s", e.Code, e.Msg)
 }
 
 const CodeNoSpacePermission = 40001900
@@ -92,12 +92,12 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		fullURL := c.baseURL + path
 		sig, err := c.signBusinessRequest(method, path, body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate signature: %w", err)
+			return nil, fmt.Errorf("sign request: %w", err)
 		}
 		bodyReader := bytes.NewReader(body)
 		httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request to %s: %w", fullURL, err)
+			return nil, fmt.Errorf("create request to %s: %w", fullURL, err)
 		}
 		if len(body) > 0 {
 			httpReq.Header.Set("Content-Type", "application/json")
@@ -105,19 +105,19 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		c.setAuthHeaders(httpReq, sig)
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
-			return nil, fmt.Errorf("request to %s failed: %w", fullURL, err)
+			return nil, fmt.Errorf("send request to %s: %w", fullURL, err)
 		}
 		respBodyBytes, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read response from %s: %w", fullURL, err)
+			return nil, fmt.Errorf("read response from %s: %w", fullURL, err)
 		}
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("request to %s returned non-200 status code: %d, body: %s", fullURL, resp.StatusCode, string(respBodyBytes))
+			return nil, fmt.Errorf("request to %s: status %d: %s", fullURL, resp.StatusCode, respBodyBytes)
 		}
 		var tuyaResp response
 		if err := json.Unmarshal(respBodyBytes, &tuyaResp); err != nil {
-			return nil, fmt.Errorf("failed to decode response from %s: %w", fullURL, err)
+			return nil, fmt.Errorf("decode response from %s: %w", fullURL, err)
 		}
 		if tuyaResp.Success {
 			return tuyaResp.Result, nil
@@ -125,11 +125,11 @@ func (c *Client) Do(ctx context.Context, method, path string, body []byte) (json
 		const tokenExpiredTuyaErrorCode = 1010
 		if tuyaResp.Code == tokenExpiredTuyaErrorCode && attempt == 0 {
 			if err := c.refreshToken(ctx); err != nil {
-				return nil, fmt.Errorf("failed to refresh token after Tuya error %d: %w", tuyaResp.Code, err)
+				return nil, fmt.Errorf("refresh token after error %d: %w", tuyaResp.Code, err)
 			}
 			continue
 		}
 		return nil, &APIError{Code: tuyaResp.Code, Msg: tuyaResp.Msg}
 	}
-	return nil, fmt.Errorf("failed to execute request to %s after retrying with a refreshed token", path)
+	return nil, fmt.Errorf("request to %s: no success after token refresh", path)
 }

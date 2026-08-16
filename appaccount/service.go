@@ -63,7 +63,7 @@ func (s *Service) Unlink(ctx context.Context, owner string) error {
 	return s.store.Unlink(ctx, owner)
 }
 
-var ErrNotLinked = errors.New("tuya: no tuya account linked to owner")
+var ErrNotLinked = errors.New("appaccount: no tuya account linked to owner")
 
 func (s *Service) uid(ctx context.Context, owner string) (string, error) {
 	acc, err := s.store.Get(ctx, owner)

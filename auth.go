@@ -31,7 +31,7 @@ func hmacSign(accessID, accessSecret, accessToken, method, path string, body []b
 	stringToSign := method + "\n" + contentSha256 + "\n\n" + path
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 	nonce := hex.EncodeToString(nonceBytes)
 	tuyaStr := accessID + accessToken + timestamp + nonce + stringToSign
@@ -61,28 +61,28 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 	fullURL := c.baseURL + path
 	sig, err := hmacSign(c.accessID, c.accessSecret, "", http.MethodGet, path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate token signature: %w", err)
+		return nil, fmt.Errorf("sign token request: %w", err)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create token request to %s: %w", fullURL, err)
+		return nil, fmt.Errorf("create token request to %s: %w", fullURL, err)
 	}
 	c.setAuthHeaders(httpReq, sig)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("token request to %s failed: %w", fullURL, err)
+		return nil, fmt.Errorf("send token request to %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read token response from %s: %w", fullURL, err)
+		return nil, fmt.Errorf("read token response from %s: %w", fullURL, err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("token request to %s returned non-200 status code: %d, body: %s", fullURL, resp.StatusCode, string(respBodyBytes))
+		return nil, fmt.Errorf("token request to %s: status %d: %s", fullURL, resp.StatusCode, respBodyBytes)
 	}
 	var tuyaResp response
 	if err := json.Unmarshal(respBodyBytes, &tuyaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response from %s: %w", fullURL, err)
+		return nil, fmt.Errorf("decode token response from %s: %w", fullURL, err)
 	}
 	return &tuyaResp, nil
 }
@@ -90,16 +90,16 @@ func (c *Client) fetchToken(ctx context.Context) (*response, error) {
 func (c *Client) updateToken(ctx context.Context) error {
 	resp, err := c.fetchToken(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
+		return fmt.Errorf("fetch token: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("tuya token request failed with code %d: %s", resp.Code, resp.Msg)
+		return fmt.Errorf("token request: code %d: %s", resp.Code, resp.Msg)
 	}
 	var result struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return fmt.Errorf("failed to unmarshal token result: %w", err)
+		return fmt.Errorf("unmarshal token result: %w", err)
 	}
 	c.accessToken = result.AccessToken
 	return nil
