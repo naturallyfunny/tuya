@@ -104,6 +104,8 @@ type Resource struct {
 	Type SpaceResourceType `json:"res_type"`
 }
 
+const SpaceResourceDevice SpaceResourceType = 0
+
 func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, lastRowKey int64, pageSize int) ([]Resource, int64, error) {
 	params := url.Values{}
 	params.Set("only_sub", strconv.FormatBool(onlySub))
@@ -128,8 +130,6 @@ func (c *Client) SpaceResources(ctx context.Context, id int64, onlySub bool, las
 	}
 	return body.Data, body.LastRowKey, nil
 }
-
-const SpaceResourceDevice SpaceResourceType = 0
 
 func (c *Client) ListSpaces(ctx context.Context, id int64, onlySub bool, lastRowKey int64, pageSize int) ([]int64, int64, error) {
 	params := url.Values{}
