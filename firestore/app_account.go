@@ -16,7 +16,7 @@ import (
 	"go.naturallyfunny.dev/tuya/appaccount"
 )
 
-const appAccountCollection = "tuya_app_accounts"
+const defaultAppAccountCollection = "tuya_app_accounts"
 
 type account struct {
 	TuyaUID   string     `firestore:"tuya_uid"`
@@ -26,18 +26,31 @@ type account struct {
 }
 
 type AppAccountStore struct {
-	client *firestore.Client
+	client     *firestore.Client
+	collection string
 }
 
-func NewAppAccountStore(client *firestore.Client) *AppAccountStore {
+type AppAccountStoreOption func(*AppAccountStore)
+
+func WithCollection(name string) AppAccountStoreOption {
+	return func(s *AppAccountStore) {
+		s.collection = name
+	}
+}
+
+func NewAppAccountStore(client *firestore.Client, opts ...AppAccountStoreOption) *AppAccountStore {
 	if client == nil {
 		panic("firestore: NewAppAccountStore called with nil client")
 	}
-	return &AppAccountStore{client: client}
+	store := &AppAccountStore{client: client, collection: defaultAppAccountCollection}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store
 }
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
-	snap, err := s.client.Collection(appAccountCollection).Doc(owner).Get(ctx)
+	snap, err := s.client.Collection(s.collection).Doc(owner).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
@@ -60,7 +73,7 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Acc
 }
 
 func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appaccount.Account, error) {
-	ref := s.client.Collection(appAccountCollection).Doc(owner)
+	ref := s.client.Collection(s.collection).Doc(owner)
 	var acc appaccount.Account
 	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		now := time.Now().UTC()
@@ -91,7 +104,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appa
 }
 
 func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
-	ref := s.client.Collection(appAccountCollection).Doc(owner)
+	ref := s.client.Collection(s.collection).Doc(owner)
 	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		snap, err := tx.Get(ref)
 		if status.Code(err) == codes.NotFound {

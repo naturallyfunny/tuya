@@ -45,6 +45,16 @@ func TestAppAccountStoreLetsFirestoreJudgeTheOwner(t *testing.T) {
 	}
 }
 
+func TestWithCollectionNamesTheCollection(t *testing.T) {
+	client := offlineClient(t)
+	if store := NewAppAccountStore(client); store.collection != defaultAppAccountCollection {
+		t.Errorf("collection = %q, want the default %q", store.collection, defaultAppAccountCollection)
+	}
+	if store := NewAppAccountStore(client, WithCollection("tenants")); store.collection != "tenants" {
+		t.Errorf("WithCollection: collection = %q, want tenants", store.collection)
+	}
+}
+
 func TestNewAppAccountStoreRejectsANilClient(t *testing.T) {
 	defer func() {
 		if recover() == nil {
