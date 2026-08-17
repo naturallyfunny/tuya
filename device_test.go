@@ -186,6 +186,16 @@ func TestSpaceHasDeviceGivesUpRatherThanPageForever(t *testing.T) {
 	}
 }
 
+func TestSpaceDevicesSeparatesIDsWithAnUnescapedComma(t *testing.T) {
+	client, stub := newSpaceClient(t, `[]`)
+	if _, err := client.SpaceDevices(context.Background(), []int64{1, 2}, 0, true, []string{"p1", "p2"}, []string{"kg", "cz"}, ""); err != nil {
+		t.Fatalf("SpaceDevices: unexpected error: %v", err)
+	}
+	if got := stub.calls()[0].rawQuery; strings.Contains(got, "%2C") {
+		t.Errorf("query = %q, want the commas unescaped: Tuya answers 1004 sign invalid on %%2C", got)
+	}
+}
+
 func TestUserDevicesCostsOneRequestWithoutTheOption(t *testing.T) {
 	client, stub := newSpaceClient(t, `[{"id":"switch-1","category":"kg"}]`)
 	devices, err := client.UserDevices(context.Background(), "uid-1")

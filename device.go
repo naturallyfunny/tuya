@@ -112,8 +112,8 @@ func (c *Client) SpaceDevices(ctx context.Context, spaceIDs []int64, pageSize in
 	if lastID != "" {
 		params.Set("last_id", lastID)
 	}
-	path := fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", params.Encode())
-	raw, err := c.Do(ctx, http.MethodGet, path, nil)
+	// Tuya checks the signature against the query it decoded, so an escaped comma between ids fails as sign invalid, code 1004.
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/thing/space/device?%s", strings.ReplaceAll(params.Encode(), "%2C", ",")), nil)
 	if err != nil {
 		return nil, err
 	}
