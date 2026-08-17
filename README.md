@@ -174,8 +174,8 @@ to bridge them with.
 
 ## What this library doesn't do
 
-- **Run the Tuya account-authorization flow.** Getting the UID — the human granting your project
-  access — happens upstream. This library starts once you can call `Link(owner, tuyaUID)`.
+- **Run the Tuya account-authorization flow.** Honestly, I haven't figured that one out yet. So for
+  now `Link` assumes you already got the Tuya UID from somewhere, however you did it.
 - **Wrap all of Tuya.** Only the essentials are wrapped so far, and more get added over time. Use
   `Do` for the rest meanwhile — and open an issue for the endpoint you need, I'll add it. Pull
   requests are welcome too, though I'm fairly strict about how code is written here, so expect me to
