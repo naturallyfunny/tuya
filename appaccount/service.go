@@ -37,6 +37,7 @@ type Client interface {
 	UserDevices(ctx context.Context, tuyaUID string, opts ...tuya.DeviceOption) ([]tuya.UserDevice, error)
 	UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (bool, error)
 	DeviceStatus(ctx context.Context, deviceID string) ([]tuya.DataPoint, error)
+	DeviceProperties(ctx context.Context, deviceID string, codes []string) ([]tuya.Property, error)
 	SendCommands(ctx context.Context, deviceID string, commands []tuya.DataPoint) error
 	DeviceChannelNames(ctx context.Context, deviceID string) ([]tuya.Channel, error)
 	ChannelNames(ctx context.Context, devices []tuya.Device) (map[string][]tuya.Channel, error)
@@ -94,6 +95,10 @@ func (s *Service) HasDevice(ctx context.Context, owner, deviceID string) (bool, 
 
 func (s *Service) DeviceStatus(ctx context.Context, deviceID string) ([]tuya.DataPoint, error) {
 	return s.client.DeviceStatus(ctx, deviceID)
+}
+
+func (s *Service) DeviceProperties(ctx context.Context, deviceID string, codes []string) ([]tuya.Property, error) {
+	return s.client.DeviceProperties(ctx, deviceID, codes)
 }
 
 func (s *Service) SendCommands(ctx context.Context, deviceID string, commands []tuya.DataPoint) error {

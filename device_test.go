@@ -186,6 +186,45 @@ func TestSpaceHasDeviceGivesUpRatherThanPageForever(t *testing.T) {
 	}
 }
 
+func TestDevicePropertiesDecodesTheLiveFieldNames(t *testing.T) {
+	client, _ := newSpaceClient(t, `{"properties":[{"code":"switch_on","custom_name":"cole_red","name":"Switch","type":"bool","dp_id":1,"time":1786177926576,"value":true}]}`)
+	properties, err := client.DeviceProperties(context.Background(), "dev-1", nil)
+	if err != nil {
+		t.Fatalf("DeviceProperties: unexpected error: %v", err)
+	}
+	if len(properties) != 1 {
+		t.Fatalf("got %d properties, want 1", len(properties))
+	}
+	want := Property{Code: "switch_on", Value: true, Type: "bool", Name: "Switch", CustomName: "cole_red", DPID: 1, Time: 1786177926576}
+	if properties[0] != want {
+		t.Errorf("property = %+v, want %+v", properties[0], want)
+	}
+}
+
+func TestDevicePropertiesSeparatesCodesWithAnUnescapedComma(t *testing.T) {
+	client, stub := newSpaceClient(t, `{"properties":[]}`)
+	if _, err := client.DeviceProperties(context.Background(), "dev-1", []string{"switch_on", "countdown"}); err != nil {
+		t.Fatalf("DeviceProperties: unexpected error: %v", err)
+	}
+	calls := stub.calls()
+	if len(calls) != 1 {
+		t.Fatalf("got %d requests, want 1", len(calls))
+	}
+	if got := calls[0].rawQuery; got != "codes=switch_on,countdown" {
+		t.Errorf("query = %q, want the comma unescaped: Tuya answers 1004 sign invalid on %%2C", got)
+	}
+}
+
+func TestDevicePropertiesWithoutCodesAsksForEveryProperty(t *testing.T) {
+	client, stub := newSpaceClient(t, `{"properties":[]}`)
+	if _, err := client.DeviceProperties(context.Background(), "dev-1", nil); err != nil {
+		t.Fatalf("DeviceProperties: unexpected error: %v", err)
+	}
+	if got := stub.calls()[0].rawQuery; got != "codes=" {
+		t.Errorf("query = %q, want an empty codes=: Tuya reads that as no filter", got)
+	}
+}
+
 func TestSpaceDevicesSeparatesIDsWithAnUnescapedComma(t *testing.T) {
 	client, stub := newSpaceClient(t, `[]`)
 	if _, err := client.SpaceDevices(context.Background(), []int64{1, 2}, 0, true, []string{"p1", "p2"}, []string{"kg", "cz"}, ""); err != nil {

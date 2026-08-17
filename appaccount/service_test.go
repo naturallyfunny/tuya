@@ -38,6 +38,8 @@ type fakeClient struct {
 	listUIDs     []string
 	listOpts     int
 	statusOf     string
+	propertiesOf string
+	askedCodes   []string
 	sentTo       string
 	sent         []tuya.DataPoint
 	namesOf      string
@@ -68,6 +70,12 @@ func (f *fakeClient) UserHasDevice(ctx context.Context, tuyaUID, deviceID string
 func (f *fakeClient) DeviceStatus(_ context.Context, deviceID string) ([]tuya.DataPoint, error) {
 	f.statusOf = deviceID
 	return []tuya.DataPoint{{Code: "switch_1", Value: true}}, nil
+}
+
+func (f *fakeClient) DeviceProperties(_ context.Context, deviceID string, codes []string) ([]tuya.Property, error) {
+	f.propertiesOf = deviceID
+	f.askedCodes = codes
+	return []tuya.Property{{Code: "switch_led", Value: true}}, nil
 }
 
 func (f *fakeClient) SendCommands(_ context.Context, deviceID string, commands []tuya.DataPoint) error {
@@ -211,6 +219,9 @@ func TestTheDeviceAddressedCallsPassThroughWithoutOwnership(t *testing.T) {
 	if _, err := c.DeviceStatus(ctx, "dev-1"); err != nil {
 		t.Fatalf("DeviceStatus: unexpected error: %v", err)
 	}
+	if _, err := c.DeviceProperties(ctx, "dev-1", []string{"switch_led"}); err != nil {
+		t.Fatalf("DeviceProperties: unexpected error: %v", err)
+	}
 	commands := []tuya.DataPoint{{Code: "switch_1", Value: true}}
 	if err := c.SendCommands(ctx, "dev-1", commands); err != nil {
 		t.Fatalf("SendCommands: unexpected error: %v", err)
@@ -222,9 +233,12 @@ func TestTheDeviceAddressedCallsPassThroughWithoutOwnership(t *testing.T) {
 		t.Fatalf("ChannelNames: unexpected error: %v", err)
 	}
 
-	if client.statusOf != "dev-1" || client.sentTo != "dev-1" || client.namesOf != "dev-1" {
-		t.Errorf("device id reached the client as status=%q send=%q names=%q, want dev-1 for each",
-			client.statusOf, client.sentTo, client.namesOf)
+	if client.statusOf != "dev-1" || client.propertiesOf != "dev-1" || client.sentTo != "dev-1" || client.namesOf != "dev-1" {
+		t.Errorf("device id reached the client as status=%q properties=%q send=%q names=%q, want dev-1 for each",
+			client.statusOf, client.propertiesOf, client.sentTo, client.namesOf)
+	}
+	if len(client.askedCodes) != 1 || client.askedCodes[0] != "switch_led" {
+		t.Errorf("DeviceProperties codes arrived as %v, want the caller's own", client.askedCodes)
 	}
 	if len(client.sent) != 1 || client.sent[0].Code != "switch_1" {
 		t.Errorf("commands arrived as %+v, want the caller's own", client.sent)

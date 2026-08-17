@@ -149,6 +149,34 @@ func (c *Client) DeviceStatus(ctx context.Context, deviceID string) ([]DataPoint
 	return status, nil
 }
 
+type Property struct {
+	Code       string `json:"code"`
+	Value      any    `json:"value"`
+	Type       string `json:"type"`
+	Name       string `json:"name"`
+	CustomName string `json:"custom_name"`
+	DPID       int    `json:"dp_id"`
+	// Time is when the device last reported this value, in Unix milliseconds.
+	Time int64 `json:"time"`
+}
+
+func (c *Client) DeviceProperties(ctx context.Context, deviceID string, codes []string) ([]Property, error) {
+	params := url.Values{}
+	// An empty codes= asks for every property, and the comma stays unescaped for the same reason as in SpaceDevices.
+	params.Set("codes", strings.Join(codes, ","))
+	raw, err := c.Do(ctx, http.MethodGet, fmt.Sprintf("/v2.0/cloud/thing/%s/shadow/properties?%s", deviceID, strings.ReplaceAll(params.Encode(), "%2C", ",")), nil)
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		Properties []Property `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("unmarshal properties of device %s: %w", deviceID, err)
+	}
+	return body.Properties, nil
+}
+
 func (c *Client) SendCommands(ctx context.Context, deviceID string, commands []DataPoint) error {
 	body, err := json.Marshal(struct {
 		Commands []DataPoint `json:"commands"`

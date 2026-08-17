@@ -71,6 +71,14 @@ status, err := client.DeviceStatus(ctx, deviceID)
 err = client.SendCommands(ctx, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
 ```
 
+`DeviceProperties` is the newer read of the same device, and it carries more than a code and a value
+— the data type, the name, and when the device last reported it. Name the codes you want, or none
+at all for every property the device reports:
+
+```go
+properties, err := client.DeviceProperties(ctx, deviceID, []string{"switch_1", "countdown_1"})
+```
+
 If the endpoint you need isn't wrapped yet — or you'd simply rather drive it yourself — `Do` is the
 same signed request one level down. Give it a method, a path and a body, and you get Tuya's `result`
 back as raw JSON to decode into whatever you like:
@@ -143,6 +151,7 @@ straight through:
 ```go
 err = app.SendCommands(ctx, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
 status, err := app.DeviceStatus(ctx, deviceID)
+properties, err := app.DeviceProperties(ctx, deviceID, nil)
 ```
 
 So `HasDevice` only answers, it doesn't block. It tells you if the device is in that owner's own
