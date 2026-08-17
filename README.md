@@ -7,7 +7,7 @@
 A Go library for the [Tuya Cloud OpenAPI](https://developer.tuya.com/en/docs/cloud/).
 
 Tuya's API is keyed by a **Tuya UID** and knows nothing about *your* users. So the module has two
-halves: one that talks to Tuya, and one that maps your own user IDs onto Tuya's.
+halves: one that talks to Tuya, and one that maps your own IDs onto Tuya's.
 
 ```sh
 go get go.naturallyfunny.dev/tuya
@@ -17,8 +17,8 @@ go get go.naturallyfunny.dev/tuya
 
 | Package               | What it is                                              | Depends on |
 | --------------------- | ------------------------------------------------------- | ---------- |
-| `tuya`                | The Tuya client. Signing, tokens, devices, spaces.       | stdlib     |
-| `tuya/appaccount`     | Your owner ID → Tuya UID, for the app-account shape.     | `tuya`     |
+| `tuya`                | The complete Tuya API client. Signing, tokens, devices, spaces.       | stdlib     |
+| `tuya/appaccount`     | Your app app's identity -> Tuya UID, for the app-account shape.     | `tuya`     |
 | `tuya/postgres`       | The owner → UID mapping stored in PostgreSQL (`pgx`).    | `appaccount` |
 | `tuya/firestore`      | The same mapping on Cloud Firestore.                     | `appaccount` |
 
@@ -30,68 +30,14 @@ firestore ─┘
 Only import what you need. `tuya` and `appaccount` are stdlib-only; `pgx` and the Firestore client
 enter your module graph only if you import those store packages.
 
-### `tuya` — the client
+## `package tuya`
 
-One access ID/secret for your whole cloud project. It fetches and caches an access token, refreshes
-it when Tuya rejects one, and signs every request. Then it wraps endpoints:
+So you have just made a Tuya cloud project but don't know how to work with the API? I got you.
 
-- **Devices** — `UserDevices`, `SpaceDevices`, `DeviceStatus`, `SendCommands`,
-  `DeviceChannelNames`, `ChannelNames`, `UserHasDevice`, `SpaceHasDevice`.
-- **Spaces** — `CreateSpace`, `Space`, `ModifySpace`, `DeleteSpace`, `SpaceResources`,
-  `ListSpaces`, `SpaceRelation`.
-- **Anything else** — `Do`, a raw signed request for endpoints not wrapped yet.
+Prepare your Access ID, Access Secret, and the base URL. The base URL is the data center your cloud
+project lives in:
 
-It has no notion of ownership: whoever holds a `*tuya.Client` can reach anything in the project.
-
-### `tuya/appaccount` — the owner mapping
-
-For the integration where each of your users signs in to a Tuya app (Tuya Smart, Smart Life, your
-OEM app) and connects it to your product. That link is a **Tuya UID**, and a `Store` remembers which
-owner it belongs to.
-
-`Service` is the whole surface for that shape: `Link` / `Unlink` / `Get` for the mapping, `Devices`
-and `HasDevice` taking *your* owner ID where the client takes a UID, and the device-addressed calls
-(`SendCommands`, `DeviceStatus`, `DeviceChannelNames`, `ChannelNames`) forwarded unchanged — a
-device ID is already a Tuya handle, so there is nothing to resolve.
-
-It **answers** ownership questions; it does not enforce them. `HasDevice` gives you a `bool`, and
-what that means is your call — a device someone shared with your user is legitimately absent from
-their listing, so a library that refused those calls would break the correct integration.
-
-Spaces are not reachable through this door. An app account's own places live in Tuya's older *asset*
-family, and its IDs are rejected by every `/v2.0/cloud/space` endpoint. Nothing relates the two
-trees, so the bridge would have to be invented.
-
-### `tuya/postgres` and `tuya/firestore` — stores
-
-Ready-made `appaccount.Store` implementations, or write your own — it's three methods.
-
-`postgres.AppAccountStore` uses a `tuya_app_accounts` table and ships embedded migrations;
-`WithAutoMigrate()` runs them at startup, otherwise it checks the schema and fails fast.
-`firestore.AppAccountStore` uses one document per owner in `tuya_app_accounts` (rename it with
-`WithCollection`), nothing to migrate.
-
-Both treat `Link` as an upsert and `Unlink` as a soft delete, so relinking revives the record and an
-unlinked owner stays on file for audit.
-
-## Wiring
-
-```go
-store, err := postgres.NewAppAccountStore(ctx, pool, postgres.WithAutoMigrate())
-
-c, err := tuya.New(accessID, accessSecret, "https://openapi.tuyaus.com")
-
-app := appaccount.NewService(c, store)
-```
-
-`tuya.New` fetches a token straight away, so bad credentials or the wrong region fail here rather
-than on your first device call. `tuya.WithHTTPClient` sets timeouts and transport.
-
-### Regions
-
-`baseURL` picks the data center:
-
-| Region           | `baseURL`                          |
+| Region           | Base URL                           |
 | ---------------- | ---------------------------------- |
 | Western America  | `https://openapi.tuyaus.com`       |
 | Eastern America  | `https://openapi-ueaz.tuyaus.com`  |
@@ -102,152 +48,136 @@ than on your first device call. `tuya.WithHTTPClient` sets timeouts and transpor
 | Singapore        | `https://openapi-sg.iotbing.com`   |
 
 Singapore is on `iotbing.com`, not `tuya*.com`. The wrong data center still hands you a token and
-then refuses every call with `28841107` — if that's what you see, check the URL before the
+then refuses every call with code `28841107` — if that's what you see, check the URL before the
 credential.
 
-## Using it
+Hand those three to `New`:
 
-Through the door, by your own owner ID:
+```go
+client, err := tuya.New(accessID, accessSecret, "https://openapi-sg.iotbing.com")
+```
+
+That is all the auth you ever have to think about. Signing every request with HMAC-SHA256, caching
+the access token, refreshing it when Tuya rejects it — the most stressful part of this API — is done
+for you. `New` fetches the first token straight away, so a bad credential or the wrong region fails
+right here instead of on your first device call. Pass `tuya.WithHTTPClient` if you want your own
+timeouts and transport.
+
+Then just call the endpoint you want:
+
+```go
+devices, err := client.UserDevices(ctx, tuyaUID)
+status, err := client.DeviceStatus(ctx, deviceID)
+err = client.SendCommands(ctx, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
+```
+
+If the endpoint you need isn't wrapped yet — or you'd simply rather drive it yourself — `Do` is the
+same signed request one level down. Give it a method, a path and a body, and you get Tuya's `result`
+back as raw JSON to decode into whatever you like:
+
+```go
+raw, err := client.Do(ctx, http.MethodGet, "/v1.0/devices/"+deviceID, nil)
+```
+
+## `package appaccount`
+
+So you have your own app, with your own users, and each of them connects their Tuya app account to
+it? Then you are holding a **Tuya UID** per user — a string that means everything to Tuya and
+nothing to your database — and every call above kept asking you for one. I got you here too.
+
+`appaccount` manages that link — it stores an **owner** against their Tuya UID, resolves the UID
+again on every call, and hands the call to the client. So you address Tuya in your own IDs. An owner
+is whatever identity your side of the integration already has: a user ID, an email, a tenant row, a
+device installation. The library never looks inside it.
+
+It needs two things: the client you just built, and a store to keep the mapping in. Two stores come
+ready-made, and only the driver you import ends up in your module.
+
+PostgreSQL, over `pgx` — it takes anything that can `Exec` and `Query`, so a `*pgxpool.Pool` or a
+single `*pgx.Conn` both fit:
+
+```go
+store, err := postgres.NewAppAccountStore(ctx, pool, postgres.WithAutoMigrate())
+```
+
+`WithAutoMigrate()` creates the `tuya_app_accounts` table at startup from migrations embedded in the
+binary. Leave it off if migrations are your deploy's job — then the constructor only checks the
+table is there and fails immediately if it isn't, rather than at 3am on a live call.
+
+Or Firestore, one document per owner, keyed by the owner ID:
+
+```go
+store := firestore.NewAppAccountStore(fsClient)
+```
+
+No migrations, so no error to handle. The collection is `tuya_app_accounts`; rename it with
+`firestore.WithCollection("...")`. Do note the import name collides with Google's own `firestore`
+package — alias one of them.
+
+Either one goes to the service, together with the client:
+
+```go
+app := appaccount.NewService(client, store)
+```
+
+Write the link down once, when a user finishes connecting their Tuya account:
+
+```go
+acc, err := app.Link(ctx, owner, tuyaUID)
+```
+
+From here on you never have to hold a Tuya UID again:
 
 ```go
 devices, err := app.Devices(ctx, owner)
 if errors.Is(err, appaccount.ErrNotLinked) {
-    // send the human into your account-linking flow
+    // no Tuya account connected yet — send them into that flow
 }
 
-acc, err := app.Get(ctx, owner)          // the owner ↔ UID mapping
-ok, err := app.HasDevice(ctx, owner, id) // a fact, not a verdict
+ok, err := app.HasDevice(ctx, owner, deviceID)
 ```
 
-Then decide what the fact means, and act:
+Acting on a device needs no owner at all — a device ID is already a Tuya handle, so these go
+straight through:
 
 ```go
-switch {
-case err != nil:
-    return err                 // the lookup failed — not the same as "no"
-case ok, myShareRules.Allow(owner, id):
-    err = app.SendCommands(ctx, id, []tuya.DataPoint{{Code: "switch_1", Value: true}})
-default:
-    return ErrForbidden        // your rule, your error
-}
+err = app.SendCommands(ctx, deviceID, []tuya.DataPoint{{Code: "switch_1", Value: true}})
+status, err := app.DeviceStatus(ctx, deviceID)
 ```
 
-Straight on the client, by Tuya handles:
+So `HasDevice` only answers, it doesn't block. It tells you if the device is in that owner's own
+list, and you decide what to do with that answer. A device someone shared with them won't be in the
+list even though they're allowed to use it, so if this library blocked the command by itself, it
+would break that.
 
-```go
-devices, err := c.UserDevices(ctx, tuyaUID)
-status, err := c.DeviceStatus(ctx, deviceID)
-devices, err := c.SpaceDevices(ctx, []int64{spaceID}, 20, true, nil, nil, "")
+When the Tuya account is disconnected, `app.Unlink(ctx, owner)`. `app.Get(ctx, owner)` hands you the
+mapping itself if you need to see it.
 
-ok, err := c.UserHasDevice(ctx, tuyaUID, deviceID)  // one request, flat
-ok, err = c.SpaceHasDevice(ctx, spaceID, deviceID)  // a paged scan — see below
-```
+In both stores `Link` is an upsert — linking again just replaces the UID — and `Unlink` really
+deletes the record, because keeping someone's Tuya UID after they disconnected is your call to make,
+not this library's. Want a trail instead? Write your own store, buddy: `Store` is three methods (`Get`,
+`Link`, `Unlink`), and the only contract that matters is returning `ErrNotLinked` when the owner has
+no link.
 
-### Channel names
-
-A multi-gang switch labels its channels on a separate endpoint. Ask for them per call, so the extra
-requests are visible where you pay for them:
-
-```go
-devices, err := c.UserDevices(ctx, tuyaUID, tuya.WithChannelNames()) // 1 + N requests
-names, err := c.ChannelNames(ctx, devices)                          // same fan-out, devices you hold
-labels, err := c.DeviceChannelNames(ctx, deviceID)                  // just one device
-```
-
-The fan-out only asks about the thirteen categories that can carry numbered channels. Three of them
-are documented as answering; the other ten are in on observed evidence, so they may come back empty.
-Category codes are exported as `tuya.DeviceCategorySwitch` and friends (134 of them) for that filter
-and for your own branches on `device.Category`.
-
-### Spaces
-
-Space calls take a space ID and have no notion of an owner.
-
-```go
-children, next, err := c.ListSpaces(ctx, spaceID, true, 0, 0) // onlySub, lastRowKey, pageSize
-room, err := c.CreateSpace(ctx, "Room 201", spaceID, "twin")
-things, next, err := c.SpaceResources(ctx, room, false, 0, 0)
-contains, err := c.SpaceRelation(ctx, spaceID, room)
-```
-
-Worth knowing:
-
-- **Paging is yours.** Every listing hands back one page plus the cursor for the next; a zero cursor
-  means the walk is over. Tuya never documents how to know there isn't a next page, so the library
-  won't loop on a guess.
-- **`onlySub` is a required argument.** `true` is direct children, `false` the whole subtree. Tuya
-  documents no default, and a listing that quietly covered the wrong depth is not something to build
-  an ownership check on.
-- **`ListSpaces` with a space ID of `0`** lists the whole project's top-level spaces.
-- **`DeleteSpace` deletes the subtree.** Tuya offers no shallow form.
-- **`SpaceRelation` is transitive** — a space answers `true` for its grandchild — but `false` for
-  itself.
-- **A space id your project can't reach is an error, not an empty answer.** Deleted, wrong project,
-  or never existed — Tuya refuses all three the same way, with code `40001900` (`No space
-  permission`) in a `*tuya.APIError`. The library passes that through instead of inventing a
-  "not found" of its own.
-- **`SpaceHasDevice` is the expensive one.** Tuya has no "which space holds this device" lookup, so
-  it enumerates the subtree's resources, up to 50 pages of 200. If your own database already records
-  where a device sits, ask that instead.
-
-Nothing is cached. Answers go stale when a device is added, removed or relinked, and Tuya never
-tells us about any of those — a layer that *can* learn about them is in a better place to cache than
-this library.
-
-### Two device shapes
-
-Tuya's device APIs come in two families that disagree about their own field names, so each endpoint
-gets its own type: `UserDevices` returns `[]UserDevice`, `SpaceDevices` returns `[]SpaceDevice`.
-
-The trap worth naming: in the *user* family `name` is the user's rename, and in the *space* family
-`name` is the factory name with the rename in `customName`. Both decode without error, so a
-merged type would silently start showing model numbers to end users. Both embed `tuya.Device`
-(`ID`, `Category`, `Channels`) — the only fields that mean the same thing on both wires, and what
-lets one `ChannelNames` fan-out serve either.
-
-The types keep identifiers, flags and status, and drop labels and presentation (`icon`, `model`,
-`lat`/`lon`, timestamps…). `local_key` is dropped because it is the device's LAN key — a secret, and
-these structs carry JSON tags. Need the rest? `Do` decodes into your own struct.
+Spaces are not reachable this way. An app account's own homes and rooms live in Tuya's older *asset*
+family, and those IDs are rejected by every `/v2.0/cloud/space` endpoint, so there is nothing here
+to bridge them with.
 
 ## What this library doesn't do
 
 - **Run the Tuya account-authorization flow.** Getting the UID — the human granting your project
   access — happens upstream. This library starts once you can call `Link(owner, tuyaUID)`.
-- **Wrap all of Tuya.** Devices and spaces are typed; `Do` is the escape hatch for the rest.
+- **Wrap all of Tuya.** Only the essentials are wrapped so far, and more get added over time. Use
+  `Do` for the rest meanwhile — and open an issue for the endpoint you need, I'll add it. Pull
+  requests are welcome too, though I'm fairly strict about how code is written here, so expect me to
+  refactor yours before merging.
 - **Enforce ownership, or cache the answer.** Both explained above.
-
-## Testing
-
-```sh
-go test ./...
-```
-
-`appaccount` is unit-tested against fake `Client` and `Store` implementations (100% of statements);
-`tuya` against an `httptest` server over real HTTP (76.4%), pinning the token retry, the space wire
-contract and the request cost of the device methods. `postgres` replays scripted rows through a fake
-`Querier` (81.3%); `firestore` only unit-tests its pure part (44.7%). Live-infra integration tests
-are on the roadmap.
-
-## Compatibility
-
-Go 1.25+, per `go.mod`. The API is stable and in use.
-
-**v0.9.0 breaking changes:** the `spatial` door and its stores were removed pending a redesign (pin
-v0.8.x if you need them); `SpaceDevices` argument order now follows Tuya's, with `pageSize` moved up
-beside `spaceIDs`; `tuya.Page` is gone in favour of plain `lastRowKey int64, pageSize int` arguments
-and an `int64` cursor; `appaccount.ListDevices` is now `Devices` returning `[]tuya.UserDevice`,
-`Account` is now `Get`, the `appaccount.Device` wrapper and `appaccount.IsMultiGang` are gone, and
-`appaccount.Client` gained methods. `tuya.ErrSpaceNotFound` and `tuya.CodeNoSpacePermission` are
-also gone: a space id Tuya refuses now surfaces as the plain `*tuya.APIError` it always was.
-
-**v0.8.0 breaking changes:** the layers swapped — the old `cloud` subpackage is now the root `tuya`
-package, and each owner mapping moved into its own subpackage (`cloud.X` → `tuya.X`,
-`tuya.NewAppAccountClient` → `appaccount.NewService`). `cloud.IoT` is gone; its methods sit on
-`*tuya.Client`. PostgreSQL migrations are now per-door directories.
 
 ## Roadmap
 
-- [ ] A door for the other integration shape, where a user holds a space rather than a Tuya account.
+- [ ] `package spatial`, just like `appaccount` but the owner is linked to a space instead of a Tuya
+      account — for multi-tenant products such as smart hotels, where the devices belong to spaces
+      rather than to a guest's own Tuya account.
 - [ ] Probe `/multiple-names` against the ten undocumented channel categories, and drop any that
       never answer.
 - [ ] Integration tests behind a build tag, against live infra.
