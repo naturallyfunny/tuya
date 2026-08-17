@@ -175,12 +175,12 @@ func (c *Client) UserHasDevice(ctx context.Context, tuyaUID, deviceID string) (b
 	return false, nil
 }
 
+const SpaceResourceDevice SpaceResourceType = 0
+
 const (
 	deviceScanMaxPages = 50
 	deviceScanPageSize = 200
 )
-
-const SpaceResourceDevice SpaceResourceType = 0
 
 func (c *Client) SpaceHasDevice(ctx context.Context, spaceID int64, deviceID string) (bool, error) {
 	var lastRowKey int64
