@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,15 @@ type Client struct {
 type Option func(*Client)
 
 func New(accessID, accessSecret, baseURL string, opts ...Option) (*Client, error) {
+	if accessID == "" {
+		return nil, errors.New("accessID is required")
+	}
+	if accessSecret == "" {
+		return nil, errors.New("accessSecret is required")
+	}
+	if baseURL == "" {
+		return nil, errors.New("baseURL is required")
+	}
 	client := &Client{
 		accessID:     accessID,
 		accessSecret: accessSecret,
