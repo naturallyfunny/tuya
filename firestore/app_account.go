@@ -5,7 +5,6 @@ package firestore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -19,10 +18,9 @@ import (
 const defaultAppAccountCollection = "tuya_app_accounts"
 
 type account struct {
-	TuyaUID   string     `firestore:"tuya_uid"`
-	CreatedAt time.Time  `firestore:"created_at"`
-	UpdatedAt time.Time  `firestore:"updated_at"`
-	DeletedAt *time.Time `firestore:"deleted_at"`
+	TuyaUID   string    `firestore:"tuya_uid"`
+	CreatedAt time.Time `firestore:"created_at"`
+	UpdatedAt time.Time `firestore:"updated_at"`
 }
 
 type AppAccountStore struct {
@@ -60,9 +58,6 @@ func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Acc
 	var acc account
 	if err := snap.DataTo(&acc); err != nil {
 		return appaccount.Account{}, fmt.Errorf("get account: decode %q: %w", owner, err)
-	}
-	if acc.DeletedAt != nil {
-		return appaccount.Account{}, appaccount.ErrNotLinked
 	}
 	return appaccount.Account{
 		Owner:     owner,
@@ -104,30 +99,12 @@ func (s *AppAccountStore) Link(ctx context.Context, owner, tuyaUID string) (appa
 }
 
 func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
-	ref := s.client.Collection(s.collection).Doc(owner)
-	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
-		snap, err := tx.Get(ref)
-		if status.Code(err) == codes.NotFound {
-			return appaccount.ErrNotLinked
-		}
-		if err != nil {
-			return err
-		}
-		var acc account
-		if err := snap.DataTo(&acc); err != nil {
-			return fmt.Errorf("decode %q: %w", owner, err)
-		}
-		if acc.DeletedAt != nil {
-			return appaccount.ErrNotLinked
-		}
-		now := time.Now().UTC()
-		return tx.Update(ref, []firestore.Update{
-			{Path: "deleted_at", Value: now},
-			{Path: "updated_at", Value: now},
-		})
-	})
-	if err != nil && !errors.Is(err, appaccount.ErrNotLinked) {
+	_, err := s.client.Collection(s.collection).Doc(owner).Delete(ctx, firestore.Exists)
+	if status.Code(err) == codes.NotFound {
+		return appaccount.ErrNotLinked
+	}
+	if err != nil {
 		return fmt.Errorf("unlink account: %w", err)
 	}
-	return err
+	return nil
 }

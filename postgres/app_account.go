@@ -132,7 +132,7 @@ func rowToAccount(row pgx.CollectableRow) (appaccount.Account, error) {
 
 func (s *AppAccountStore) Get(ctx context.Context, owner string) (appaccount.Account, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner = $1 AND deleted_at IS NULL`,
+		`SELECT owner, tuya_uid, created_at, updated_at FROM tuya_app_accounts WHERE owner = $1`,
 		owner,
 	)
 	if err != nil {
@@ -153,7 +153,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string
 		`INSERT INTO tuya_app_accounts (owner, tuya_uid)
 		 VALUES ($1, $2)
 		 ON CONFLICT (owner) DO UPDATE
-		   SET tuya_uid = EXCLUDED.tuya_uid, updated_at = NOW(), deleted_at = NULL
+		   SET tuya_uid = EXCLUDED.tuya_uid, updated_at = NOW()
 		 RETURNING owner, tuya_uid, created_at, updated_at`,
 		owner, tuyaUID,
 	)
@@ -169,9 +169,7 @@ func (s *AppAccountStore) Link(ctx context.Context, owner string, tuyaUID string
 
 func (s *AppAccountStore) Unlink(ctx context.Context, owner string) error {
 	tag, err := s.db.Exec(ctx,
-		`UPDATE tuya_app_accounts
-		   SET deleted_at = NOW(), updated_at = NOW()
-		 WHERE owner = $1 AND deleted_at IS NULL`,
+		`DELETE FROM tuya_app_accounts WHERE owner = $1`,
 		owner,
 	)
 	if err != nil {

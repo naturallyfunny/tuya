@@ -44,9 +44,6 @@ func TestAppAccountGet(t *testing.T) {
 	if got := db.queries[0].args; len(got) != 1 || got[0] != "owner-1" {
 		t.Errorf("Get queried with %v, want owner-1", got)
 	}
-	if !strings.Contains(db.queries[0].sql, "deleted_at IS NULL") {
-		t.Errorf("Get reads unlinked rows too:\n%s", db.queries[0].sql)
-	}
 }
 
 func TestAppAccountGetUnlinkedOwner(t *testing.T) {
@@ -70,7 +67,7 @@ func TestAppAccountGetFailedLookupIsNotAnAnswer(t *testing.T) {
 	}
 }
 
-func TestAppAccountLinkRevivesAnUnlinkedOwner(t *testing.T) {
+func TestAppAccountLinkReplacesTheUIDOfAnOwnerAlreadyOnFile(t *testing.T) {
 	db := &fakeDB{row: accountRow()}
 	store := newAccountStore(t, db)
 	acc, err := store.Link(context.Background(), "owner-1", "uid-1")
@@ -81,24 +78,24 @@ func TestAppAccountLinkRevivesAnUnlinkedOwner(t *testing.T) {
 		t.Errorf("Link = %+v, want owner-1 linked to uid-1", acc)
 	}
 	sql := db.queries[0].sql
-	if !strings.Contains(sql, "ON CONFLICT") || !strings.Contains(sql, "deleted_at = NULL") {
-		t.Errorf("Link leaves a previously unlinked owner unlinked:\n%s", sql)
+	if !strings.Contains(sql, "ON CONFLICT") {
+		t.Errorf("Link fails on an owner that already has a row:\n%s", sql)
 	}
 }
 
 func TestAppAccountUnlink(t *testing.T) {
-	db := &fakeDB{row: accountRow(), tag: "UPDATE 1"}
+	db := &fakeDB{row: accountRow(), tag: "DELETE 1"}
 	store := newAccountStore(t, db)
 	if err := store.Unlink(context.Background(), "owner-1"); err != nil {
 		t.Fatalf("Unlink: unexpected error: %v", err)
 	}
-	if !strings.Contains(db.execs[0].sql, "deleted_at = NOW()") {
-		t.Errorf("Unlink is not a soft delete:\n%s", db.execs[0].sql)
+	if !strings.Contains(db.execs[0].sql, "DELETE FROM") {
+		t.Errorf("Unlink leaves the row behind:\n%s", db.execs[0].sql)
 	}
 }
 
 func TestAppAccountUnlinkOwnerThatWasNeverLinked(t *testing.T) {
-	db := &fakeDB{row: accountRow(), tag: "UPDATE 0"}
+	db := &fakeDB{row: accountRow(), tag: "DELETE 0"}
 	store := newAccountStore(t, db)
 	if err := store.Unlink(context.Background(), "owner-1"); !errors.Is(err, appaccount.ErrNotLinked) {
 		t.Errorf("Unlink error = %v, want ErrNotLinked", err)
